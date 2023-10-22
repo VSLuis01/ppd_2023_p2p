@@ -171,11 +171,13 @@ func main() {
 	}
 	defer tcpListener.Close()
 
+	// cria uma chave única privada RSA para os super nós conectarem
 	chaveDeConexao := startPeer(ctx, h, handleStream)
 
 	// lida com conexoes de outros supernós
 	fmt.Println("Aguardando supernós se conectarem...")
 
+	// canais criados para controlar a conexão dos supernós
 	ackChan := make(chan bool, 2)
 
 	for i := 0; i < 2; i++ {
@@ -199,6 +201,7 @@ func main() {
 
 	broadcastMessage(ctx, psSuperMaster, "broadcast", []byte("concluido"))
 
+	// tabela de roteamento de todos os supernós
 	var tabelas []peer.AddrInfo
 
 	fmt.Println()
@@ -211,13 +214,13 @@ func main() {
 
 	fmt.Println(tabelas)
 
-	byteTeste, err := json.Marshal(tabelas)
+	byteTabela, err := json.Marshal(tabelas)
 	if err != nil {
 		fmt.Println("Erro ao converter", err)
 		return
 	}
 
-	broadcastMessage(ctx, psSuperMaster, "roteamento", byteTeste)
+	broadcastMessage(ctx, psSuperMaster, "roteamento", byteTabela)
 
 	select {}
 
