@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"github.com/libp2p/go-libp2p"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -56,7 +57,7 @@ func subscribeToTopic(ctx context.Context, pubsub *pubsub.PubSub, topic string) 
 	return sub, nil
 }
 
-func MakeHost(port int, rand io.Reader) (h host.Host, err error) {
+func makeHost(port int, rand io.Reader) (h host.Host, err error) {
 	// cria uma chave única privada RSA
 
 	privateKey, _, err := crypto.GenerateKeyPairWithReader(crypto.RSA, 2048, rand)
@@ -119,18 +120,9 @@ func startPeerAndConnect(ctx context.Context, h host.Host, destination string) (
 	return rw, nil
 }
 
-func main() {
-	ctx, cancel := context.WithCancel(context.Background())
-
-	defer cancel()
+// parte que vai se comunicar com o nó mestre
+func clientSide(h host.Host, ctx context.Context) {
 	buffer := make([]byte, 1024)
-
-	h, err := MakeHost(0, rand.Reader)
-
-	if err != nil {
-		log.Println("Erro ao criar host: ", err)
-		return
-	}
 
 	pb, err := pubsub.NewGossipSub(context.Background(), h)
 	if err != nil {
@@ -179,6 +171,38 @@ func main() {
 	// Create a thread to read and write data.
 	//go writeData(rw)
 	//go readData(rw)
+
+	select {}
+}
+
+// parte que vai se comunicar com os nós servidores
+func serverSide(h host.Host, ctx context.Context) {
+
+	select {}
+}
+
+func main() {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	defer cancel()
+
+	// definindo a porta do supernó
+	superPort := flag.Int("p", 0, "Porta destino")
+	flag.Parse()
+
+	hostClientSide, err := makeHost(0, rand.Reader)
+	if err != nil {
+		log.Println("Erro ao criar host client side: ", err)
+		return
+	}
+	hostServerSide, err := makeHost(*superPort, rand.Reader)
+	if err != nil {
+		log.Println("Erro ao criar host server side: ", err)
+		return
+	}
+
+	go clientSide(hostClientSide, ctx)
+	go serverSide(hostServerSide, ctx)
 
 	// Wait forever
 	select {}
