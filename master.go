@@ -20,8 +20,6 @@ import (
 	"time"
 )
 
-type TabelaDeRoteamento map[string][]multiaddr.Multiaddr
-
 func readData(rw *bufio.ReadWriter) {
 
 	for {
