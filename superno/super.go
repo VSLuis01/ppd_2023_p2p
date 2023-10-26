@@ -17,60 +17,95 @@ import (
 	"io"
 	"log"
 	"net"
+	"time"
 )
 
 var tabelasDeRoteamento []peer.AddrInfo
 
-func subscribeToTopic(ctx context.Context, pubsub *pubsub.PubSub, topic string) (*pubsub.Subscription, error) {
-	// Subscribe to the topic
-	mytopc, err := pubsub.Join(topic)
-
-	if err != nil {
-		return nil, err
-	}
-	sub, err := mytopc.Subscribe()
-	if err != nil {
-		return nil, err
-	}
-	// Start a goroutine to handle incoming messages
-	go func() {
-		for {
-			msg, err := sub.Next(ctx)
-
-			if err != nil {
-				log.Println("Error reading message:", err)
-				continue
-			}
-
-			if topic == "roteamento" {
-				err := json.Unmarshal(msg.Data, &tabelasDeRoteamento)
-				if err != nil {
-					log.Println("Erro ao deserializar roteamento: ", err)
-				}
-				log.Println("Recebido tabela de roteamento: ", tabelasDeRoteamento)
-			} else {
-				log.Printf("Received message: %s\n", string(msg.Data))
-			}
+func errorHandler(err error, msg string, fatal bool) {
+	if fatal {
+		if err != nil {
+			log.Fatal(msg, err)
 		}
-	}()
-
-	return sub, nil
+	} else {
+		if err != nil {
+			log.Println(msg, err)
+		}
+	}
 }
 
-func makeHost(port int, rand io.Reader) (h host.Host, err error) {
-	// cria uma chave única privada RSA
+func printPeerstore(h host.Host) {
+	for _, p := range h.Network().Peers() {
+		fmt.Println("Conectado ao peer:", p)
+		fmt.Println("\tEndereços do peer:", h.Peerstore().PeerInfo(p))
+	}
+}
 
+func listensSubs(ctx context.Context, sub *pubsub.Subscription, topic *pubsub.Topic, ackChan chan<- bool, h host.Host) {
+	for {
+		msg, err := sub.Next(ctx)
+
+		if err != nil {
+			fmt.Println("Error reading message:", err)
+			continue
+		}
+
+		if topic.String() == "roteamento" {
+			err := json.Unmarshal(msg.Data, &tabelasDeRoteamento)
+
+			if err != nil {
+				fmt.Println("Erro ao deserializar roteamento: ", err)
+			} else {
+				// deu tudo certo, ir para a parte de servidores
+				for _, p := range tabelasDeRoteamento {
+					if p.ID.String() != h.ID().String() {
+						err := h.Connect(ctx, p)
+						if err != nil {
+							fmt.Println("Erro ao conectar com supernó: ", err)
+						}
+					}
+				}
+				ackChan <- true
+			}
+		} else {
+			fmt.Printf("Received message: %s\n", string(msg.Data))
+		}
+	}
+}
+
+func subscribeToTopic(mytopc *pubsub.Topic) (*pubsub.Subscription, error) {
+	// Subscribe to the topic
+	sub, err := mytopc.Subscribe()
+	errorHandler(err, "Erro ao se inscrever no tópico: ", false)
+
+	return sub, err
+}
+
+func createAndJoinTopic(pubsub *pubsub.PubSub, topicName string) (*pubsub.Topic, error) {
+	return pubsub.Join(topicName)
+}
+
+func broadcastMessage(ctx context.Context, pubsub *pubsub.Topic, message []byte) error {
+	// Publish the message to the topic
+	err := pubsub.Publish(ctx, message)
+
+	// Wait for the message to be propagated to all peers
+	ctx, cancel := context.WithTimeout(ctx, time.Second*5)
+	defer cancel()
+
+	return err
+}
+
+func MakeHost(port int, rand io.Reader) (h host.Host, err error) {
+	// cria uma chave única privada RSA
 	privateKey, _, err := crypto.GenerateKeyPairWithReader(crypto.RSA, 2048, rand)
 	if err != nil {
-		log.Println("Erro ao criar chave privada: ", err)
 		return nil, err
 	}
 
 	// criando um multiaddr para ouvir em qualquer ip
 	sourcerMulti, err := multiaddr.NewMultiaddr(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port))
-
 	if err != nil {
-		log.Println("Falha ao criar endereço multiaddr: ", err)
 		return nil, err
 	}
 
@@ -80,105 +115,54 @@ func makeHost(port int, rand io.Reader) (h host.Host, err error) {
 	)
 }
 
+func tcpHandleConnection(conn net.Conn, ackChan chan<- bool, i int, ctx context.Context, h host.Host) {
+	defer conn.Close()
+	buffer := make([]byte, 1024)
+
+	n, err := conn.Read(buffer)
+	errorHandler(err, "Erro ao ler a chave de identificação:", true)
+
+	chaveDeConexao := string(buffer[:n])
+	if err != nil {
+		fmt.Println("Erro ao enviar a chave de identificação:", err)
+		ackChan <- false
+		return
+	}
+
+	startPeerAndConnect(ctx, h, chaveDeConexao)
+
+	fmt.Println("Chave de identificação enviada para o servidor ", i+1)
+
+	ack := "ACK"
+	_, err = conn.Write([]byte(ack))
+	if err != nil {
+		fmt.Println("Erro ao ler o ACK do cliente: ", i+1, err)
+		ackChan <- false
+		return
+	} else {
+		ackChan <- true
+	}
+
+}
+
 func startPeerAndConnect(ctx context.Context, h host.Host, destination string) (*bufio.ReadWriter, error) {
-	/*log.Println("This node's multiaddresses:")
-	for _, la := range h.Addrs() {
-		log.Printf(" - %v\n", la)
-	}*/
-	log.Println()
 
-	// Turn the destination into a multiaddr.
 	maddr, err := multiaddr.NewMultiaddr(destination)
-	if err != nil {
-		log.Println(err)
-		return nil, err
-	}
+	errorHandler(err, "Erro ao criar multiaddr: ", true)
 
-	// Extract the peer ID from the multiaddr.
 	info, err := peer.AddrInfoFromP2pAddr(maddr)
-	if err != nil {
-		log.Println(err)
-		return nil, err
-	}
+	errorHandler(err, "Erro ao extrair peer ID: ", true)
 
-	// Add the destination's peer multiaddress in the peerstore.
-	// This will be used during connection and stream creation by libp2p.
 	h.Peerstore().AddAddrs(info.ID, info.Addrs, peerstore.PermanentAddrTTL)
 
-	// Start a stream with the destination.
-	// Multiaddress of the destination peer is fetched from the peerstore using 'peerId'.
 	s, err := h.NewStream(context.Background(), info.ID, "/handshake/master")
-	if err != nil {
-		log.Println(err)
-		return nil, err
-	}
-	log.Println("Conexão estabelecida com o nó mestre")
+	errorHandler(err, "Erro ao criar stream: ", true)
 
-	// Create a buffered stream so that read and writes are non-blocking.
+	fmt.Println("Conexão estabelecida com o servidor")
+
 	rw := bufio.NewReadWriter(bufio.NewReader(s), bufio.NewWriter(s))
 
 	return rw, nil
-}
-
-// parte que vai se comunicar com o nó mestre
-func clientSide(h host.Host, ctx context.Context) {
-	buffer := make([]byte, 1024)
-
-	pb, err := pubsub.NewGossipSub(context.Background(), h)
-	if err != nil {
-		log.Println("Erro ao criar pubsub: ", err)
-		return
-	}
-
-	subscribeToTopic(context.Background(), pb, "broadcast")
-	subscribeToTopic(context.Background(), pb, "roteamento")
-
-	fmt.Println("Aguardando conexão de um peer...")
-	conn, err := net.Dial("tcp", "localhost:8080")
-	if err != nil {
-		fmt.Println("Erro ao conectar ao servidor:", err)
-		return
-	}
-	fmt.Println("Conexão estabelecida com sucesso")
-	defer conn.Close()
-
-	fmt.Println("Lendo chave de identificação...")
-	n, err := conn.Read(buffer)
-	if err != nil {
-		fmt.Println("Erro ao ler a chave de identificação:", err)
-		return
-	}
-
-	chaveConexao := string(buffer[:n])
-
-	fmt.Println("Chave de acesso recebida: ", chaveConexao)
-
-	fmt.Println("Estabelecendo conexão com o nó mestre...")
-	_, err = startPeerAndConnect(ctx, h, chaveConexao)
-	if err != nil {
-		log.Println("Erro ao conectar ao peer: ", err)
-		return
-	}
-
-	ack := "ACK"
-	fmt.Println("Enviando ACK para o nó mestre...")
-	_, err = conn.Write([]byte(ack))
-	if err != nil {
-		fmt.Println("Erro ao enviar ACK:", err)
-		return
-	}
-
-	// Create a thread to read and write data.
-	//go writeData(rw)
-	//go readData(rw)
-
-	select {}
-}
-
-// parte que vai se comunicar com os nós servidores
-func serverSide(h host.Host, ctx context.Context) {
-
-	select {}
 }
 
 func main() {
@@ -186,24 +170,114 @@ func main() {
 
 	defer cancel()
 
-	// definindo a porta do supernó
-	superPort := flag.Int("p", 0, "Porta destino")
+	serversPort := flag.String("p", "0", "Porta para conexão com servidores")
 	flag.Parse()
+	buffer := make([]byte, 1024)
 
-	hostClientSide, err := makeHost(0, rand.Reader)
-	if err != nil {
-		log.Println("Erro ao criar host client side: ", err)
-		return
-	}
-	hostServerSide, err := makeHost(*superPort, rand.Reader)
-	if err != nil {
-		log.Println("Erro ao criar host server side: ", err)
-		return
-	}
+	h, err := MakeHost(0, rand.Reader)
+	errorHandler(err, "Erro ao criar host: ", true)
 
-	go clientSide(hostClientSide, ctx)
-	go serverSide(hostServerSide, ctx)
+	pb, err := pubsub.NewGossipSub(context.Background(), h)
+	errorHandler(err, "Erro ao criar pubsub: ", true)
+
+	ackChan := make(chan bool, 1)
+	// criação dos topicos
+	broadcastTopic, err := createAndJoinTopic(pb, "broadcast")
+	errorHandler(err, "Erro ao criar tópico broadcast: ", true)
+
+	roteamentoTopic, err := createAndJoinTopic(pb, "roteamento")
+	errorHandler(err, "Erro ao criar tópico roteamento: ", true)
+
+	servidoresTopic, err := createAndJoinTopic(pb, "Servidores")
+	errorHandler(err, "Erro ao criar tópico servidores: ", true)
+
+	// inscrição dos topicos
+	broadcastSub, err := subscribeToTopic(broadcastTopic)
+	errorHandler(err, "Erro ao se inscrever no tópico broadcast: ", true)
+	go listensSubs(ctx, broadcastSub, broadcastTopic, nil, h)
+
+	roteamentoSub, err := subscribeToTopic(roteamentoTopic)
+	errorHandler(err, "Erro ao se inscrever no tópico roteamento: ", true)
+	go listensSubs(ctx, roteamentoSub, roteamentoTopic, ackChan, h)
+
+	conn, err := net.Dial("tcp", "localhost:8080")
+	errorHandler(err, "Erro ao conectar ao servidor:", true)
+
+	fmt.Println("Conexão TCP estabelecida com sucesso")
+	defer conn.Close()
+
+	n, err := conn.Read(buffer)
+	errorHandler(err, "Erro ao ler a chave de identificação:", true)
+
+	chaveConexaoMestre := string(buffer[:n])
+
+	fmt.Println("Chave de acesso recebida")
+
+	_, err = startPeerAndConnect(ctx, h, chaveConexaoMestre)
+	errorHandler(err, "(libp2p)Erro ao conectar ao mestre: ", true)
+
+	ack := "ACK"
+	fmt.Println("Enviando ACK para o nó mestre...")
+	_, err = conn.Write([]byte(ack))
+	errorHandler(err, "Erro ao enviar ACK:", true)
+
+	if <-ackChan {
+		go handleServers(serversPort, ctx, h, servidoresTopic, roteamentoTopic)
+	}
+	// Create a thread to read and write data.
+	//go writeData(rw)
+	//go readData(rw)
 
 	// Wait forever
 	select {}
+}
+
+func handleServers(serversPort *string, ctx context.Context, h host.Host, topicServ *pubsub.Topic, topicRot *pubsub.Topic) bool {
+	//super nós podem se conectar a rede p2p
+	ackChan := make(chan bool, 2)
+	//concatena : com o servers port com
+
+	address := ":" + *serversPort
+
+	tcpListener, err := net.Listen("tcp", address)
+	errorHandler(err, "Erro ao criar servidor TCP: ", false)
+
+	defer tcpListener.Close()
+
+	for i := 0; i < 2; i++ {
+		fmt.Println("Aguardando servidor ", i+1, " se conectar...")
+		conn, err := tcpListener.Accept()
+		errorHandler(err, "Erro ao aceitar conexão:", true)
+
+		go tcpHandleConnection(conn, ackChan, i, ctx, h)
+	}
+
+	if <-ackChan && <-ackChan {
+		fmt.Println("Ambos os servidores se conectaram com sucesso!")
+	} else {
+		fmt.Println("Erro ao conectar um ou mais nós.")
+	}
+
+	fmt.Println("Enviando mensagem de broadcast aos servidores")
+
+	err = broadcastMessage(ctx, topicServ, []byte("ACK"))
+	errorHandler(err, "Erro ao enviar mensagem de broadcast: ", true)
+
+	// tabela de roteamento de todos os supernós
+	var tabelas []peer.AddrInfo
+
+	fmt.Println()
+	// listar todas as informações dos peers conectados
+	for _, p := range h.Network().Peers() {
+		tabelas = append(tabelas, h.Peerstore().PeerInfo(p))
+	}
+
+	printPeerstore(h)
+
+	byteTabela, err := json.Marshal(tabelas)
+	errorHandler(err, "Erro ao converter tabela para bytes: ", true)
+
+	err = broadcastMessage(ctx, topicRot, byteTabela)
+	errorHandler(err, "Erro ao enviar mensagem de broadcast: ", true)
+	return false
 }

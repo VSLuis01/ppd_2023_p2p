@@ -20,6 +20,22 @@ import (
 	"time"
 )
 
+type TabelaDeRoteamento map[string][]multiaddr.Multiaddr
+
+func errorHandler(err error, msg string) {
+	if err != nil {
+		log.Println(msg, err)
+	}
+}
+
+func printPeerstore(h host.Host) {
+	for _, p := range h.Network().Peers() {
+		fmt.Println("Conectado ao peer:", p)
+		fmt.Println("\tEndereços do peer:", h.Peerstore().PeerInfo(p))
+		fmt.Println()
+	}
+}
+
 func readData(rw *bufio.ReadWriter) {
 
 	for {
@@ -47,13 +63,10 @@ func handleStream(s network.Stream) {
 	//go writeData(rw)
 }
 
-func startPeer(ctx context.Context, h host.Host, streamHandler network.StreamHandler) (pontoDeConexao string) {
-	// Set a function as stream handler.
-	// This function is called when a peer connects, and starts a stream with this protocol.
-	// Only applies on the receiving side.
+func startPeer(h host.Host, streamHandler network.StreamHandler) (pontoDeConexao string) {
+	// Seta uma função como stream handler. Essa função é chamada quando um peer se conecta e inicia uma stream com esse protocolo.
 	h.SetStreamHandler("/handshake/master", streamHandler)
 
-	// Let's get the actual TCP port from our listen multiaddr, in case we're using 0 (default; random available port).
 	var port string
 	for _, la := range h.Network().ListenAddresses() {
 		if p, err := la.ValueForProtocol(multiaddr.P_TCP); err == nil {
@@ -63,7 +76,7 @@ func startPeer(ctx context.Context, h host.Host, streamHandler network.StreamHan
 	}
 
 	if port == "" {
-		log.Println("was not able to find actual local port")
+		log.Println("Erro ao obter a porta TCP")
 		return
 	}
 
@@ -93,19 +106,18 @@ func makeHost(port int, rand io.Reader) (h host.Host, err error) {
 	)
 }
 
-func broadcastMessage(ctx context.Context, pubsub *pubsub.PubSub, topic string, message []byte) error {
+func createAndJoinTopic(pubsub *pubsub.PubSub, topicName string) (*pubsub.Topic, error) {
+	return pubsub.Join(topicName)
+}
+
+func broadcastMessage(ctx context.Context, topic *pubsub.Topic, message []byte) {
 	// Publish the message to the topic
-	mytopc, err := pubsub.Join(topic)
-	mytopc.Publish(ctx, message)
-	if err != nil {
-		return err
-	}
+	err := topic.Publish(ctx, message)
+	errorHandler(err, "Erro ao publicar mensagem: ")
 
 	// Wait for the message to be propagated to all peers
 	ctx, cancel := context.WithTimeout(ctx, time.Second*5)
 	defer cancel()
-
-	return nil
 }
 
 func tcpHandleConnection(conn net.Conn, chaveDeConexao string, ackChan chan<- bool, i int) {
@@ -138,39 +150,28 @@ func tcpHandleConnection(conn net.Conn, chaveDeConexao string, ackChan chan<- bo
 }
 
 func main() {
-	ctx, cancel := context.WithCancel(context.Background())
-
-	defer cancel()
+	ctx := context.Background()
 
 	// definindo a porta do nó mestre
 	masterPort := flag.Int("p", 0, "Porta destino")
 	flag.Parse()
 
 	// criando um host que irá escutar em qualquer interface "0.0.0.0" e na porta "masterPort"
-	fmt.Println("Criando host. Porta:", *masterPort)
 	h, err := makeHost(*masterPort, rand.Reader)
-	if err != nil {
-		log.Println("Erro ao criar host: ", err)
-		return
-	}
+	errorHandler(err, "Erro ao criar host: ")
 
 	// criando um novo pubsub para os supernós se conectarem ao nó mestre (conexao exclusiva entre eles)
 	psSuperMaster, err := pubsub.NewGossipSub(context.Background(), h)
-	if err != nil {
-		log.Println("Erro ao criar pubsub: ", err)
-		return
-	}
+	errorHandler(err, "Erro ao criar pubsub: ")
 
 	// servidor tcp
 	tcpListener, err := net.Listen("tcp", ":8080")
-	if err != nil {
-		fmt.Println("Erro ao criar servidor TCP:", err)
-		return
-	}
+	errorHandler(err, "Erro ao criar servidor TCP: ")
+
 	defer tcpListener.Close()
 
 	// cria uma chave única privada RSA para os super nós conectarem
-	chaveDeConexao := startPeer(ctx, h, handleStream)
+	chaveDeConexao := startPeer(h, handleStream)
 
 	// lida com conexoes de outros supernós
 	fmt.Println("Aguardando supernós se conectarem...")
@@ -179,12 +180,9 @@ func main() {
 	ackChan := make(chan bool, 2)
 
 	for i := 0; i < 2; i++ {
-		fmt.Println("Aguardando supernó ", i+1, " se conectar...")
 		conn, err := tcpListener.Accept()
-		if err != nil {
-			fmt.Println("Erro ao aceitar conexão:", err)
-			return
-		}
+		errorHandler(err, "Erro ao aceitar conexão: ")
+
 		go tcpHandleConnection(conn, chaveDeConexao, ackChan, i)
 	}
 
@@ -195,9 +193,10 @@ func main() {
 		fmt.Println("Erro ao conectar um ou mais nós.")
 	}
 
-	fmt.Println("Enviando mensagem de broadcast")
+	fmt.Println("Enviando mensagem de broadcast...")
 
-	broadcastMessage(ctx, psSuperMaster, "broadcast", []byte("concluido"))
+	broadcastTopic, _ := createAndJoinTopic(psSuperMaster, "broadcast")
+	broadcastMessage(ctx, broadcastTopic, []byte("concluido"))
 
 	// tabela de roteamento de todos os supernós
 	var tabelas []peer.AddrInfo
@@ -206,19 +205,14 @@ func main() {
 	// listar todas as informações dos peers conectados
 	for _, p := range h.Network().Peers() {
 		tabelas = append(tabelas, h.Peerstore().PeerInfo(p))
-		fmt.Println("Conectado ao peer:", p)
-		fmt.Println("\tEndereços do peer:", h.Peerstore().PeerInfo(p))
 	}
-
-	fmt.Println(tabelas)
+	printPeerstore(h)
 
 	byteTabela, err := json.Marshal(tabelas)
-	if err != nil {
-		fmt.Println("Erro ao converter", err)
-		return
-	}
+	errorHandler(err, "Erro ao converter tabela para bytes: ")
 
-	broadcastMessage(ctx, psSuperMaster, "roteamento", byteTabela)
+	roteamentoTopic, _ := createAndJoinTopic(psSuperMaster, "roteamento")
+	broadcastMessage(ctx, roteamentoTopic, byteTabela)
 
 	select {}
 
