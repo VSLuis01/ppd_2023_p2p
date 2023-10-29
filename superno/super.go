@@ -17,10 +17,31 @@ import (
 	"io"
 	"log"
 	"net"
+	"os"
+	"strings"
 	"time"
 )
 
 var tabelasDeRoteamento []peer.AddrInfo
+var ipProximoNo string
+var ipNoAnterior string
+
+func openFileAndGetIps() []string {
+	file, err := os.Open("ips")
+	errorHandler(err, "Erro ao abrir arquivo: ", true)
+
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+
+	var ips []string
+
+	for scanner.Scan() {
+		ips = append(ips, strings.TrimSpace(scanner.Text()))
+	}
+
+	return ips
+}
 
 func errorHandler(err error, msg string, fatal bool) {
 	if fatal {
@@ -122,6 +143,11 @@ func tcpHandleConnection(conn net.Conn, ackChan chan<- bool, i int, ctx context.
 	n, err := conn.Read(buffer)
 	errorHandler(err, "Erro ao ler a chave de identificação:", true)
 
+	/*
+		dessa parte em diante deve se analisar as mensagens recebidas, para saber se é uma mensagem de cadastro,
+		ou uma mensagem de solicitação de arquivo, ou outra mensagem
+	*/
+
 	chaveDeConexao := string(buffer[:n])
 	if err != nil {
 		fmt.Println("Erro ao enviar a chave de identificação:", err)
@@ -176,7 +202,27 @@ func main() {
 
 	h, err := MakeHost(0, rand.Reader)
 	errorHandler(err, "Erro ao criar host: ", true)
+	fmt.Println(h.Addrs())
+	listIp := openFileAndGetIps()
+	fmt.Println(listIp)
 
+	///baseado no arquivo, encontra o ipatual e define proximo e anterior
+	ip := h.Addrs()[0].String()
+	for indice, valor := range listIp {
+		if strings.Contains(ip, valor) {
+			if indice == 0 {
+				ipNoAnterior = listIp[len(listIp)-1]
+				ipProximoNo = listIp[indice+1]
+			} else if indice == len(listIp)-1 {
+				ipNoAnterior = listIp[indice-1]
+				ipProximoNo = listIp[0]
+			} else {
+				ipNoAnterior = listIp[indice-1]
+				ipProximoNo = listIp[indice+1]
+			}
+			break
+		}
+	}
 	pb, err := pubsub.NewGossipSub(context.Background(), h)
 	errorHandler(err, "Erro ao criar pubsub: ", true)
 
@@ -200,7 +246,9 @@ func main() {
 	errorHandler(err, "Erro ao se inscrever no tópico roteamento: ", true)
 	go listensSubs(ctx, roteamentoSub, roteamentoTopic, ackChan, h)
 
-	conn, err := net.Dial("tcp", "localhost:8080")
+	//se conecta com o mestre
+	ipMestre := listIp[0] + ":8080"
+	conn, err := net.Dial("tcp", ipMestre)
 	errorHandler(err, "Erro ao conectar ao servidor:", true)
 
 	fmt.Println("Conexão TCP estabelecida com sucesso")
@@ -231,7 +279,26 @@ func main() {
 	// Wait forever
 	select {}
 }
+func sendMessageNext(mensagem string) {
+	conn, err := net.Dial("tcp", ipProximoNo+":8080")
+	errorHandler(err, "Erro ao conectar ao servidor:", true)
 
+	fmt.Println("Conexão TCP estabelecida com sucesso")
+	defer conn.Close()
+
+	_, err = conn.Write([]byte(mensagem))
+	errorHandler(err, "Erro ao enviar mensagem", true)
+}
+func sendMessageAnt(mensagem string) {
+	conn, err := net.Dial("tcp", ipNoAnterior+":8080")
+	errorHandler(err, "Erro ao conectar ao servidor:", true)
+
+	fmt.Println("Conexão TCP estabelecida com sucesso")
+	defer conn.Close()
+
+	_, err = conn.Write([]byte(mensagem))
+	errorHandler(err, "Erro ao enviar mensagem", true)
+}
 func handleServers(serversPort *string, ctx context.Context, h host.Host, topicServ *pubsub.Topic, topicRot *pubsub.Topic) bool {
 	//super nós podem se conectar a rede p2p
 	ackChan := make(chan bool, 2)

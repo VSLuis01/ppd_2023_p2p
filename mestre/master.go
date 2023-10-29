@@ -17,17 +17,37 @@ import (
 	"io"
 	"log"
 	"net"
+	"os"
+	"strings"
 	"time"
 )
 
 type TabelaDeRoteamento map[string][]multiaddr.Multiaddr
+
+var ipProximoNo string
+var ipNoAnterior string
 
 func errorHandler(err error, msg string) {
 	if err != nil {
 		log.Println(msg, err)
 	}
 }
+func openFileAndGetIps() []string {
+	file, err := os.Open("ips")
+	errorHandler(err, "Erro ao abrir arquivo: ")
 
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+
+	var ips []string
+
+	for scanner.Scan() {
+		ips = append(ips, strings.TrimSpace(scanner.Text()))
+	}
+
+	return ips
+}
 func printPeerstore(h host.Host) {
 	for _, p := range h.Network().Peers() {
 		fmt.Println("Conectado ao peer:", p)
@@ -148,7 +168,26 @@ func tcpHandleConnection(conn net.Conn, chaveDeConexao string, ackChan chan<- bo
 		ackChan <- false
 	}
 }
+func sendMessageNext(mensagem string) {
+	conn, err := net.Dial("tcp", ipProximoNo+":8080")
+	errorHandler(err, "Erro ao conectar ao servidor:")
 
+	fmt.Println("Conexão TCP estabelecida com sucesso")
+	defer conn.Close()
+
+	_, err = conn.Write([]byte(mensagem))
+	errorHandler(err, "Erro ao enviar mensagem")
+}
+func sendMessageAnt(mensagem string) {
+	conn, err := net.Dial("tcp", ipNoAnterior+":8080")
+	errorHandler(err, "Erro ao conectar ao servidor:")
+
+	fmt.Println("Conexão TCP estabelecida com sucesso")
+	defer conn.Close()
+
+	_, err = conn.Write([]byte(mensagem))
+	errorHandler(err, "Erro ao enviar mensagem")
+}
 func main() {
 	ctx := context.Background()
 
@@ -159,7 +198,7 @@ func main() {
 	// criando um host que irá escutar em qualquer interface "0.0.0.0" e na porta "masterPort"
 	h, err := makeHost(*masterPort, rand.Reader)
 	errorHandler(err, "Erro ao criar host: ")
-
+	fmt.Println(h.Addrs())
 	// criando um novo pubsub para os supernós se conectarem ao nó mestre (conexao exclusiva entre eles)
 	psSuperMaster, err := pubsub.NewGossipSub(context.Background(), h)
 	errorHandler(err, "Erro ao criar pubsub: ")

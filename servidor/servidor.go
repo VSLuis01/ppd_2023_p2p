@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"github.com/libp2p/go-libp2p"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -17,9 +16,13 @@ import (
 	"io"
 	"log"
 	"net"
+	"os"
+	"strings"
 )
 
 var tabelasDeRoteamento []peer.AddrInfo
+var ipProximoNo string
+var ipNoAnterior string
 
 func errorHandler(err error, msg string, fatal bool) {
 	if fatal {
@@ -32,7 +35,22 @@ func errorHandler(err error, msg string, fatal bool) {
 		}
 	}
 }
+func openFileAndGetIps() []string {
+	file, err := os.Open("ips")
+	errorHandler(err, "Erro ao abrir arquivo: ", true)
 
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+
+	var ips []string
+
+	for scanner.Scan() {
+		ips = append(ips, strings.TrimSpace(scanner.Text()))
+	}
+
+	return ips
+}
 func printPeerstore(h host.Host) {
 	for _, p := range h.Network().Peers() {
 		fmt.Println("Conectado ao peer:", p)
@@ -179,14 +197,30 @@ func startPeer(h host.Host, streamHandler network.StreamHandler) (pontoDeConexao
 func main() {
 	ctx := context.Background()
 
-	ip := flag.String("ip", "127.0.0.1:8002", "Ip e porta destino")
-	flag.Parse()
-
 	//definir ip e porta do servidor
 
 	h, err := MakeHost(0, rand.Reader)
 	errorHandler(err, "Erro ao criar host: ", true)
+	listIp := openFileAndGetIps()
+	fmt.Println(listIp)
 
+	///baseado no arquivo, encontra o ipatual e define proximo e anterior
+	ipHost := h.Addrs()[0].String()
+	for indice, valor := range listIp {
+		if strings.Contains(ipHost, valor) {
+			if indice == 0 {
+				ipNoAnterior = listIp[len(listIp)-1]
+				ipProximoNo = listIp[indice+1]
+			} else if indice == len(listIp)-1 {
+				ipNoAnterior = listIp[indice-1]
+				ipProximoNo = listIp[0]
+			} else {
+				ipNoAnterior = listIp[indice-1]
+				ipProximoNo = listIp[indice+1]
+			}
+			break
+		}
+	}
 	pb, err := pubsub.NewGossipSub(context.Background(), h)
 	errorHandler(err, "Erro ao criar pubsub: ", true)
 
@@ -204,7 +238,7 @@ func main() {
 
 	fmt.Println("Aguardando conexão de um peer...")
 
-	conn, err := net.Dial("tcp", *ip)
+	conn, err := net.Dial("tcp", listIp[1]+":8080")
 	defer conn.Close()
 	errorHandler(err, "Erro ao conectar ao servidor:", true)
 
