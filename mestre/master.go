@@ -27,14 +27,20 @@ type TabelaDeRoteamento map[string][]multiaddr.Multiaddr
 var ipProximoNo string
 var ipNoAnterior string
 
-func errorHandler(err error, msg string) {
-	if err != nil {
-		log.Println(msg, err)
+func errorHandler(err error, msg string, fatal bool) {
+	if fatal {
+		if err != nil {
+			log.Fatal(msg, err)
+		}
+	} else {
+		if err != nil {
+			log.Println(msg, err)
+		}
 	}
 }
 func openFileAndGetIps() []string {
 	file, err := os.Open("ips")
-	errorHandler(err, "Erro ao abrir arquivo: ")
+	errorHandler(err, "Erro ao abrir arquivo: ", true)
 
 	defer file.Close()
 
@@ -133,7 +139,7 @@ func createAndJoinTopic(pubsub *pubsub.PubSub, topicName string) (*pubsub.Topic,
 func broadcastMessage(ctx context.Context, topic *pubsub.Topic, message []byte) {
 	// Publish the message to the topic
 	err := topic.Publish(ctx, message)
-	errorHandler(err, "Erro ao publicar mensagem: ")
+	errorHandler(err, "Erro ao publicar mensagem: ", true)
 
 	// Wait for the message to be propagated to all peers
 	ctx, cancel := context.WithTimeout(ctx, time.Second*5)
@@ -168,25 +174,52 @@ func tcpHandleConnection(conn net.Conn, chaveDeConexao string, ackChan chan<- bo
 		ackChan <- false
 	}
 }
-func sendMessageNext(mensagem string) {
-	conn, err := net.Dial("tcp", ipProximoNo+":8080")
-	errorHandler(err, "Erro ao conectar ao servidor:")
+func receiveMessageAnelListening(adress string) {
+	tcpListener, err := net.Listen("tcp", adress)
+	if err != nil {
+		errorHandler(err, "Erro ao ler mensagem TCP: ", false)
+		return
+	}
+	for {
+		conn, err := tcpListener.Accept()
+		if err != nil {
+			errorHandler(err, "Erro ao ler mensagem TCP: ", false)
+			return
+		}
+		go func() { //leitura dos dados recebidos e tratamento deles
+			for {
+				buffer := make([]byte, 1024)
+				n, err := conn.Read(buffer)
 
-	fmt.Println("Conexão TCP estabelecida com sucesso")
-	defer conn.Close()
-
-	_, err = conn.Write([]byte(mensagem))
-	errorHandler(err, "Erro ao enviar mensagem")
+				if err != nil {
+					errorHandler(err, "Erro ao ler mensagem TCP: ", false)
+					return
+				}
+				fmt.Println("Mensagem recebida do nó anterior: ", string(buffer[:n]))
+			}
+		}()
+	}
 }
-func sendMessageAnt(mensagem string) {
-	conn, err := net.Dial("tcp", ipNoAnterior+":8080")
-	errorHandler(err, "Erro ao conectar ao servidor:")
+
+func sendMessageNext(mensagem []byte) {
+	conn, err := net.Dial("tcp", ipProximoNo+":40832")
+	errorHandler(err, "Erro ao conectar ao servidor:", true)
 
 	fmt.Println("Conexão TCP estabelecida com sucesso")
 	defer conn.Close()
 
-	_, err = conn.Write([]byte(mensagem))
-	errorHandler(err, "Erro ao enviar mensagem")
+	_, err = conn.Write(mensagem)
+	errorHandler(err, "Erro ao enviar mensagem", true)
+}
+func sendMessageAnt(mensagem []byte) {
+	conn, err := net.Dial("tcp", ipNoAnterior+":40833")
+	errorHandler(err, "Erro ao conectar ao servidor:", true)
+
+	fmt.Println("Conexão TCP estabelecida com sucesso")
+	defer conn.Close()
+
+	_, err = conn.Write(mensagem)
+	errorHandler(err, "Erro ao enviar mensagem", true)
 }
 func main() {
 	ctx := context.Background()
@@ -197,15 +230,39 @@ func main() {
 
 	// criando um host que irá escutar em qualquer interface "0.0.0.0" e na porta "masterPort"
 	h, err := makeHost(*masterPort, rand.Reader)
-	errorHandler(err, "Erro ao criar host: ")
-	fmt.Println(h.Addrs())
+	errorHandler(err, "Erro ao criar host: ", true)
+	listIp := openFileAndGetIps()
+	fmt.Println(listIp)
+
+	///baseado no arquivo, encontra o ipatual e define proximo e anterior
+	ipHost := h.Addrs()[0].String()
+	for indice, valor := range listIp { //busca o ip da maquina na lista de ips
+		if strings.Contains(ipHost, valor) {
+			if indice == 0 {
+				ipNoAnterior = listIp[len(listIp)-1]
+				ipProximoNo = listIp[indice+1]
+			} else if indice == len(listIp)-1 {
+				ipNoAnterior = listIp[indice-1]
+				ipProximoNo = listIp[0]
+			} else {
+				ipNoAnterior = listIp[indice-1]
+				ipProximoNo = listIp[indice+1]
+			}
+			ipHost = valor
+			break
+		}
+	}
+
 	// criando um novo pubsub para os supernós se conectarem ao nó mestre (conexao exclusiva entre eles)
 	psSuperMaster, err := pubsub.NewGossipSub(context.Background(), h)
-	errorHandler(err, "Erro ao criar pubsub: ")
+	errorHandler(err, "Erro ao criar pubsub: ", true)
 
 	// servidor tcp
-	tcpListener, err := net.Listen("tcp", ":8080")
-	errorHandler(err, "Erro ao criar servidor TCP: ")
+	tcpListener, err := net.Listen("tcp", ipHost+":8080")
+
+	go receiveMessageAnelListening(ipHost + ":40833") //sucessor
+	go receiveMessageAnelListening(ipHost + ":40832") //anterior
+	errorHandler(err, "Erro ao criar servidor TCP: ", true)
 
 	defer tcpListener.Close()
 
@@ -220,7 +277,7 @@ func main() {
 
 	for i := 0; i < 2; i++ {
 		conn, err := tcpListener.Accept()
-		errorHandler(err, "Erro ao aceitar conexão: ")
+		errorHandler(err, "Erro ao aceitar conexão: ", true)
 
 		go tcpHandleConnection(conn, chaveDeConexao, ackChan, i)
 	}
@@ -248,7 +305,7 @@ func main() {
 	printPeerstore(h)
 
 	byteTabela, err := json.Marshal(tabelas)
-	errorHandler(err, "Erro ao converter tabela para bytes: ")
+	errorHandler(err, "Erro ao converter tabela para bytes: ", true)
 
 	roteamentoTopic, _ := createAndJoinTopic(psSuperMaster, "roteamento")
 	broadcastMessage(ctx, roteamentoTopic, byteTabela)

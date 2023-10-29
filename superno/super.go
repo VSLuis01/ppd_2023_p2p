@@ -207,9 +207,9 @@ func main() {
 	fmt.Println(listIp)
 
 	///baseado no arquivo, encontra o ipatual e define proximo e anterior
-	ip := h.Addrs()[0].String()
-	for indice, valor := range listIp {
-		if strings.Contains(ip, valor) {
+	ipHost := h.Addrs()[0].String()
+	for indice, valor := range listIp { //busca o ip da maquina na lista de ips
+		if strings.Contains(ipHost, valor) {
 			if indice == 0 {
 				ipNoAnterior = listIp[len(listIp)-1]
 				ipProximoNo = listIp[indice+1]
@@ -220,9 +220,12 @@ func main() {
 				ipNoAnterior = listIp[indice-1]
 				ipProximoNo = listIp[indice+1]
 			}
+			ipHost = valor
 			break
 		}
 	}
+	go receiveMessageAnelListening(ipHost + ":40833") //sucessor
+	go receiveMessageAnelListening(ipHost + ":40832") //anterior
 	pb, err := pubsub.NewGossipSub(context.Background(), h)
 	errorHandler(err, "Erro ao criar pubsub: ", true)
 
@@ -279,24 +282,51 @@ func main() {
 	// Wait forever
 	select {}
 }
-func sendMessageNext(mensagem string) {
-	conn, err := net.Dial("tcp", ipProximoNo+":8080")
+func receiveMessageAnelListening(adress string) {
+	tcpListener, err := net.Listen("tcp", adress)
+	if err != nil {
+		errorHandler(err, "Erro ao ler mensagem TCP: ", false)
+		return
+	}
+	for {
+		conn, err := tcpListener.Accept()
+		if err != nil {
+			errorHandler(err, "Erro ao ler mensagem TCP: ", false)
+			return
+		}
+		go func() { //leitura dos dados recebidos e tratamento deles
+			for {
+				buffer := make([]byte, 1024)
+				n, err := conn.Read(buffer)
+
+				if err != nil {
+					errorHandler(err, "Erro ao ler mensagem TCP: ", false)
+					return
+				}
+				fmt.Println("Mensagem recebida do nó anterior: ", string(buffer[:n]))
+			}
+		}()
+	}
+}
+
+func sendMessageNext(mensagem []byte) {
+	conn, err := net.Dial("tcp", ipProximoNo+":40832")
 	errorHandler(err, "Erro ao conectar ao servidor:", true)
 
 	fmt.Println("Conexão TCP estabelecida com sucesso")
 	defer conn.Close()
 
-	_, err = conn.Write([]byte(mensagem))
+	_, err = conn.Write(mensagem)
 	errorHandler(err, "Erro ao enviar mensagem", true)
 }
-func sendMessageAnt(mensagem string) {
-	conn, err := net.Dial("tcp", ipNoAnterior+":8080")
+func sendMessageAnt(mensagem []byte) {
+	conn, err := net.Dial("tcp", ipNoAnterior+":40833")
 	errorHandler(err, "Erro ao conectar ao servidor:", true)
 
 	fmt.Println("Conexão TCP estabelecida com sucesso")
 	defer conn.Close()
 
-	_, err = conn.Write([]byte(mensagem))
+	_, err = conn.Write(mensagem)
 	errorHandler(err, "Erro ao enviar mensagem", true)
 }
 func handleServers(serversPort *string, ctx context.Context, h host.Host, topicServ *pubsub.Topic, topicRot *pubsub.Topic) bool {
