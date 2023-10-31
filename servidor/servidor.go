@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"github.com/libp2p/go-libp2p"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -23,7 +24,24 @@ import (
 var tabelasDeRoteamento []peer.AddrInfo
 var ipProximoNo string
 var ipNoAnterior string
+var ipHost string
 
+type mensagem struct {
+	IpOrigem  string
+	IpDestino string
+	Conteudo  string
+	IpAtual   string
+}
+
+func (m *mensagem) enviarMensagemNext(tipo string) {
+	//envia mensagem para o proximo
+	sendMessageNext([]byte(tipo + "#" + m.IpOrigem + "#" + m.IpDestino + "#" + m.Conteudo + "#" + ipHost))
+}
+
+func (m *mensagem) enviarMensagemAnt(tipo string) {
+	//envia mensagem para o proximo
+	sendMessageAnt([]byte(tipo + "#" + m.IpOrigem + "#" + m.IpDestino + "#" + m.Conteudo + "#" + ipHost))
+}
 func errorHandler(err error, msg string, fatal bool) {
 	if fatal {
 		if err != nil {
@@ -36,7 +54,7 @@ func errorHandler(err error, msg string, fatal bool) {
 	}
 }
 func openFileAndGetIps() []string {
-	file, err := os.Open("ips")
+	file, err := os.Open("../ips")
 	errorHandler(err, "Erro ao abrir arquivo: ", true)
 
 	defer file.Close()
@@ -64,21 +82,39 @@ func receiveMessageAnelListening(adress string) {
 			return
 		}
 		go func() { //leitura dos dados recebidos e tratamento deles
+			//ipTratamento, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
+			fmt.Println("Conexão TCP estabelecida com sucesso:", conn.RemoteAddr().String())
 			for {
 				buffer := make([]byte, 1024)
 				n, err := conn.Read(buffer)
-
+				//	decodedMessage, err := base64.StdEncoding.DecodeString(string(buffer[:n]))
+				recebimento := string(buffer[:n])
+				aux := strings.Split(recebimento, "#")
+				if len(aux) < 5 { //evita mensagens com formato invalido
+					continue
+				}
+				fmt.Println("Mensagem recebida: [", aux, "],[", recebimento, "]")
+				m := mensagem{IpOrigem: aux[1], IpDestino: aux[2], Conteudo: aux[3], IpAtual: aux[4]}
+				fmt.Println("mensagem criada")
+				tipo := aux[0]
 				if err != nil {
 					errorHandler(err, "Erro ao ler mensagem TCP: ", false)
 					return
 				}
-				fmt.Println("Mensagem recebida do nó anterior: ", string(buffer[:n]))
+				//separa de quem veio a mensagem
+				if m.IpAtual == ipProximoNo {
+					fmt.Println("Mensagem recebida do nó proximo: ", m.Conteudo, " tipo: ", tipo)
+					sendMessageNext(buffer[:n])
+				} else {
+					fmt.Println("Mensagem recebida do nó anterior: ")
+				}
+
 			}
 		}()
 	}
 }
 func sendMessageNext(mensagem []byte) {
-	conn, err := net.Dial("tcp", ipProximoNo+":40832")
+	conn, err := net.Dial("tcp", ipProximoNo)
 	errorHandler(err, "Erro ao conectar ao servidor:", true)
 
 	fmt.Println("Conexão TCP estabelecida com sucesso")
@@ -88,7 +124,7 @@ func sendMessageNext(mensagem []byte) {
 	errorHandler(err, "Erro ao enviar mensagem", true)
 }
 func sendMessageAnt(mensagem []byte) {
-	conn, err := net.Dial("tcp", ipNoAnterior+":40833")
+	conn, err := net.Dial("tcp", ipNoAnterior)
 	errorHandler(err, "Erro ao conectar ao servidor:", true)
 
 	fmt.Println("Conexão TCP estabelecida com sucesso")
@@ -242,7 +278,8 @@ func startPeer(h host.Host, streamHandler network.StreamHandler) (pontoDeConexao
 
 func main() {
 	ctx := context.Background()
-
+	ipFile := flag.Int("d", -1, "Porta destino")
+	flag.Parse()
 	//definir ip e porta do servidor
 
 	h, err := MakeHost(0, rand.Reader)
@@ -252,24 +289,41 @@ func main() {
 
 	///baseado no arquivo, encontra o ipatual e define proximo e anterior
 	ipHost := h.Addrs()[0].String()
-	for indice, valor := range listIp {
-		if strings.Contains(ipHost, valor) {
-			if indice == 0 {
-				ipNoAnterior = listIp[len(listIp)-1]
-				ipProximoNo = listIp[indice+1]
-			} else if indice == len(listIp)-1 {
-				ipNoAnterior = listIp[indice-1]
-				ipProximoNo = listIp[0]
-			} else {
-				ipNoAnterior = listIp[indice-1]
-				ipProximoNo = listIp[indice+1]
+	if *ipFile == -1 {
+		for indice, valor := range listIp { //busca o ip da maquina na lista de ips
+			ipAtual, _, _ := net.SplitHostPort(valor)
+			if strings.Contains(ipHost, ipAtual) {
+				if indice == 0 {
+					ipNoAnterior = listIp[len(listIp)-1]
+					ipProximoNo = listIp[indice+1]
+				} else if indice == len(listIp)-1 {
+					ipNoAnterior = listIp[indice-1]
+					ipProximoNo = listIp[0]
+				} else {
+					ipNoAnterior = listIp[indice-1]
+					ipProximoNo = listIp[indice+1]
+				}
+				ipHost = valor
+				break
 			}
-			ipHost = valor
-			break
 		}
+	} else {
+		indice := *ipFile
+		fmt.Println("Indice: ", indice)
+		if indice == 0 {
+			ipNoAnterior = listIp[len(listIp)-1]
+			ipProximoNo = listIp[indice+1]
+		} else if indice == len(listIp)-1 {
+			ipNoAnterior = listIp[indice-1]
+			ipProximoNo = listIp[0]
+		} else {
+			ipNoAnterior = listIp[indice-1]
+			ipProximoNo = listIp[indice+1]
+		}
+		ipHost = listIp[indice]
 	}
-	go receiveMessageAnelListening(ipHost + ":40833") //sucessor
-	go receiveMessageAnelListening(ipHost + ":40832") //anterior
+	go receiveMessageAnelListening(ipHost)
+
 	pb, err := pubsub.NewGossipSub(context.Background(), h)
 	errorHandler(err, "Erro ao criar pubsub: ", true)
 
@@ -287,7 +341,8 @@ func main() {
 
 	fmt.Println("Aguardando conexão de um peer...")
 	//por padrao o endereço do superno de configuração inicial é o segundo elemento da lista de ips
-	conn, err := net.Dial("tcp", listIp[1]+":8080")
+	ipHostIp, _, _ := net.SplitHostPort(listIp[1])
+	conn, err := net.Dial("tcp", ipHostIp+":8080")
 	defer conn.Close()
 	errorHandler(err, "Erro ao conectar ao servidor:", true)
 

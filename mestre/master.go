@@ -26,6 +26,24 @@ type TabelaDeRoteamento map[string][]multiaddr.Multiaddr
 
 var ipProximoNo string
 var ipNoAnterior string
+var ipHost string
+
+type mensagem struct {
+	IpOrigem  string
+	IpDestino string
+	Conteudo  string
+	IpAtual   string
+}
+
+func (m *mensagem) enviarMensagemNext(tipo string) {
+	//envia mensagem para o proximo
+	sendMessageNext([]byte(tipo + "#" + m.IpOrigem + "#" + m.IpDestino + "#" + m.Conteudo + "#" + ipHost))
+}
+
+func (m *mensagem) enviarMensagemAnt(tipo string) {
+	//envia mensagem para o proximo
+	sendMessageAnt([]byte(tipo + "#" + m.IpOrigem + "#" + m.IpDestino + "#" + m.Conteudo + "#" + ipHost))
+}
 
 func errorHandler(err error, msg string, fatal bool) {
 	if fatal {
@@ -39,7 +57,7 @@ func errorHandler(err error, msg string, fatal bool) {
 	}
 }
 func openFileAndGetIps() []string {
-	file, err := os.Open("ips")
+	file, err := os.Open("../ips")
 	errorHandler(err, "Erro ao abrir arquivo: ", true)
 
 	defer file.Close()
@@ -187,22 +205,40 @@ func receiveMessageAnelListening(adress string) {
 			return
 		}
 		go func() { //leitura dos dados recebidos e tratamento deles
+			//ipTratamento, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
+			fmt.Println("Conexão TCP estabelecida com sucesso:", conn.RemoteAddr().String())
 			for {
 				buffer := make([]byte, 1024)
 				n, err := conn.Read(buffer)
-
+				//	decodedMessage, err := base64.StdEncoding.DecodeString(string(buffer[:n]))
+				recebimento := string(buffer[:n])
+				aux := strings.Split(recebimento, "#")
+				if len(aux) < 5 { //evita mensagens com formato invalido
+					continue
+				}
+				fmt.Println("Mensagem recebida: [", aux, "],[", recebimento, "]")
+				m := mensagem{IpOrigem: aux[1], IpDestino: aux[2], Conteudo: aux[3], IpAtual: aux[4]}
+				fmt.Println("mensagem criada")
+				tipo := aux[0]
 				if err != nil {
 					errorHandler(err, "Erro ao ler mensagem TCP: ", false)
 					return
 				}
-				fmt.Println("Mensagem recebida do nó anterior: ", string(buffer[:n]))
+				//separa de quem veio a mensagem
+				if m.IpAtual == ipProximoNo {
+					fmt.Println("Mensagem recebida do nó proximo: ", m.Conteudo, " tipo: ", tipo)
+					sendMessageNext(buffer[:n])
+				} else {
+					fmt.Println("Mensagem recebida do nó anterior: ")
+				}
+
 			}
 		}()
 	}
 }
 
 func sendMessageNext(mensagem []byte) {
-	conn, err := net.Dial("tcp", ipProximoNo+":40832")
+	conn, err := net.Dial("tcp", ipProximoNo)
 	errorHandler(err, "Erro ao conectar ao servidor:", true)
 
 	fmt.Println("Conexão TCP estabelecida com sucesso")
@@ -212,7 +248,7 @@ func sendMessageNext(mensagem []byte) {
 	errorHandler(err, "Erro ao enviar mensagem", true)
 }
 func sendMessageAnt(mensagem []byte) {
-	conn, err := net.Dial("tcp", ipNoAnterior+":40833")
+	conn, err := net.Dial("tcp", ipNoAnterior)
 	errorHandler(err, "Erro ao conectar ao servidor:", true)
 
 	fmt.Println("Conexão TCP estabelecida com sucesso")
@@ -226,6 +262,7 @@ func main() {
 
 	// definindo a porta do nó mestre
 	masterPort := flag.Int("p", 0, "Porta destino")
+	ipFile := flag.Int("d", -1, "Porta destino")
 	flag.Parse()
 
 	// criando um host que irá escutar em qualquer interface "0.0.0.0" e na porta "masterPort"
@@ -236,32 +273,48 @@ func main() {
 
 	///baseado no arquivo, encontra o ipatual e define proximo e anterior
 	ipHost := h.Addrs()[0].String()
-	for indice, valor := range listIp { //busca o ip da maquina na lista de ips
-		if strings.Contains(ipHost, valor) {
-			if indice == 0 {
-				ipNoAnterior = listIp[len(listIp)-1]
-				ipProximoNo = listIp[indice+1]
-			} else if indice == len(listIp)-1 {
-				ipNoAnterior = listIp[indice-1]
-				ipProximoNo = listIp[0]
-			} else {
-				ipNoAnterior = listIp[indice-1]
-				ipProximoNo = listIp[indice+1]
+	if *ipFile == -1 {
+		for indice, valor := range listIp { //busca o ip da maquina na lista de ips
+			ipAtual, _, _ := net.SplitHostPort(valor)
+			if strings.Contains(ipHost, ipAtual) {
+				if indice == 0 {
+					ipNoAnterior = listIp[len(listIp)-1]
+					ipProximoNo = listIp[indice+1]
+				} else if indice == len(listIp)-1 {
+					ipNoAnterior = listIp[indice-1]
+					ipProximoNo = listIp[0]
+				} else {
+					ipNoAnterior = listIp[indice-1]
+					ipProximoNo = listIp[indice+1]
+				}
+				ipHost = valor
+				break
 			}
-			ipHost = valor
-			break
 		}
+	} else {
+		indice := *ipFile
+		if indice == 0 {
+			ipNoAnterior = listIp[len(listIp)-1]
+			ipProximoNo = listIp[indice+1]
+		} else if indice == len(listIp)-1 {
+			ipNoAnterior = listIp[indice-1]
+			ipProximoNo = listIp[0]
+		} else {
+			ipNoAnterior = listIp[indice-1]
+			ipProximoNo = listIp[indice+1]
+		}
+		ipHost = listIp[indice]
 	}
+	//inicia recepçao de mensagens do anel
+	go receiveMessageAnelListening(ipHost)
 
 	// criando um novo pubsub para os supernós se conectarem ao nó mestre (conexao exclusiva entre eles)
 	psSuperMaster, err := pubsub.NewGossipSub(context.Background(), h)
 	errorHandler(err, "Erro ao criar pubsub: ", true)
-
+	ipHostIp, _, _ := net.SplitHostPort(ipHost)
 	// servidor tcp
-	tcpListener, err := net.Listen("tcp", ipHost+":8080")
+	tcpListener, err := net.Listen("tcp", ipHostIp+":8080")
 
-	go receiveMessageAnelListening(ipHost + ":40833") //sucessor
-	go receiveMessageAnelListening(ipHost + ":40832") //anterior
 	errorHandler(err, "Erro ao criar servidor TCP: ", true)
 
 	defer tcpListener.Close()
