@@ -130,8 +130,6 @@ func tcpHandleMessages(conn net.Conn, ackChan chan<- bool) {
 
 		if err == io.EOF {
 			fmt.Printf("[%s] A conexão foi fechada pelo nó.\n", conn.RemoteAddr().String())
-			err = conn.Close()
-			errorHandler(err, fmt.Sprintf("Erro ao fechar conexão com [%s]", conn.RemoteAddr().String()), false)
 			return
 		}
 

@@ -16,11 +16,17 @@ import (
 )
 
 var tabelasDeRoteamento []string
+
 var ipNextNode string
 var connNextNode *net.TCPConn = nil
+
 var ipPrevNode string
 var connPrevNode *net.TCPConn = nil
+
 var ipHost string
+var privateKey string
+
+var privateKeyMestre string
 
 type Mensagem struct {
 	Tipo       string
@@ -241,19 +247,24 @@ func main() {
 		ipNextNode, ipPrevNode, ipHost = getNextAndPrevAndHostManual(listIp, *ipIndexFile)
 	}
 
-	/*go receiveMessageAnelListening(ipHost)
-	var m mensagem
-	m.IpDestino = ipProximoNo
-	m.IpOrigem = ipHost
-	m.Conteudo = "teste"
-	m.enviarMensagemAnt("teste")*/
-
-	ackChan := make(chan bool, 1)
+	finishMestreChan := make(chan bool, 1)
 
 	//se conecta com o mestre
 
 	ipMestre := listIp[0]
 
+	go configNoMestre(ipMestre, finishMestreChan)
+
+	// Construção da Rede a partir daqui (todos os super nós se conectaram)
+	if <-finishMestreChan {
+		//go handleServers(serversPort, ctx, h, servidoresTopic, roteamentoTopic)
+	}
+
+	// Wait forever
+	select {}
+}
+
+func configNoMestre(ipMestre string, finish chan<- bool) {
 	tcpAddrMestre, _ := net.ResolveTCPAddr("tcp", ipMestre)
 	tcpAddrHost, _ := net.ResolveTCPAddr("tcp", ipHost)
 
@@ -271,6 +282,7 @@ func main() {
 	chaveMestre = chaveMestre[:lenMsg]
 	fmt.Println("Chave recebida do mestre: ", string(chaveMestre))
 
+	privateKeyMestre = string(chaveMestre)
 	//go tcpHandleIncomingMessages(mestreConn)
 
 	ack := "ACK"
@@ -310,19 +322,10 @@ func main() {
 		for _, supers := range tabelasDeRoteamento {
 			fmt.Println(supers)
 		}
+		finish <- true
 	}
 
-	// Construção da Rede a partir daqui (todos os super nós se conectaram)
-
-	if <-ackChan {
-		//go handleServers(serversPort, ctx, h, servidoresTopic, roteamentoTopic)
-	}
-	// Create a thread to read and write data.
-	//go writeData(rw)
-	//go readData(rw)
-
-	// Wait forever
-	select {}
+	finish <- false
 }
 
 /*func receiveMessageAnelListening(adress string) {
@@ -369,30 +372,6 @@ func main() {
 		}()
 	}
 }*/
-
-func sendMessageNext(mensagem []byte) {
-	conn, err := net.Dial("tcp", ipNextNode)
-	errorHandler(err, "Erro ao conectar ao servidor:", true)
-
-	fmt.Println("Conexão TCP estabelecida com sucesso")
-	defer conn.Close()
-
-	_, err = conn.Write([]byte(mensagem))
-	errorHandler(err, "Erro ao enviar mensagem", true)
-}
-
-func sendMessageAnt(mensagem []byte) {
-	conn, err := net.Dial("tcp", ipPrevNode)
-	errorHandler(err, "Erro ao conectar ao servidor:", true)
-
-	fmt.Println("Conexão TCP estabelecida com sucesso")
-	defer conn.Close()
-	fmt.Println("Mensagem enviada para o nó anterior: [", string(mensagem), "]")
-
-	_, err = conn.Write([]byte(mensagem))
-
-	errorHandler(err, "Erro ao enviar mensagem", true)
-}
 
 /*func handleServers(serversPort *string, ctx context.Context, h host.Host, topicServ *pubsub.Topic, topicRot *pubsub.Topic) bool {
 	//super nós podem se conectar a rede p2p
