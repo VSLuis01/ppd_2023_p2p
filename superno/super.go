@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/sha1"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -14,7 +15,7 @@ import (
 	"time"
 )
 
-var tabelasDeRoteamento []net.Conn
+var tabelasDeRoteamento []string
 var ipNextNode string
 var ipPrevNode string
 var ipHost string
@@ -35,6 +36,12 @@ func (m *mensagem) enviarMensagemAnt(tipo string) {
 	//envia mensagem para o proximo
 	sendMessageAnt([]byte(tipo + "#" + m.IpOrigem + "#" + m.IpDestino + "#" + m.Conteudo + "#" + ipHost))
 }*/
+
+func printIps() {
+	fmt.Println("ipNextNo: ", ipNextNode)
+	fmt.Println("ipPrevNo: ", ipPrevNode)
+	fmt.Println("ipHost: ", ipHost)
+}
 
 func openFileAndGetIps(filename string) []string {
 	file, err := os.Open(filename)
@@ -190,10 +197,6 @@ func main() {
 		ipNextNode, ipPrevNode, ipHost = getNextAndPrevAndHostManual(listIp, *ipIndexFile)
 	}
 
-	fmt.Println("ipNextNo: ", ipNextNode)
-	fmt.Println("ipPrevNo: ", ipPrevNode)
-	fmt.Println("ipHost: ", ipHost)
-
 	/*go receiveMessageAnelListening(ipHost)
 	var m mensagem
 	m.IpDestino = ipProximoNo
@@ -215,10 +218,9 @@ func main() {
 	errorHandler(err, "Erro ao conectar ao mestre:", true)
 	fmt.Println("Conexão TCP estabelecida com sucesso")
 
-	// ver o que fazer com isso
 	chaveMestre := make([]byte, 1024)
 
-	// recebe a chave de identificação do no mestre
+	// recebe a chave de identificação do no mestre. ver o que fazer com isso
 	lenMsg, err := mestreConn.Read(chaveMestre)
 	errorHandler(err, "Erro ao receber chave do mestre:", false)
 
@@ -231,6 +233,42 @@ func main() {
 	fmt.Println("Enviando ACK para o nó mestre...")
 	_, err = mestreConn.Write([]byte(ack))
 	errorHandler(err, "Erro ao enviar ACK:", true)
+
+	// esperando todos so super nos se registrarem
+	fmt.Println()
+	fmt.Println("Aguardando supernós se registrarem...")
+
+	confirmacao := make([]byte, 2)
+	msgLen, err := mestreConn.Read(confirmacao)
+
+	errorHandler(err, "Erro ao receber confirmação do mestre:", true)
+	confirmacao = confirmacao[:msgLen]
+
+	if string(confirmacao) == "ok" {
+		// solicitando tabela de roteamento
+		fmt.Println("Solicitando tabela de roteamento ao mestre...")
+
+		_, err = mestreConn.Write([]byte("roteamento-supers"))
+		errorHandler(err, "Erro ao solicitar tabela de roteamento:", true)
+
+		// recebe a tabela de roteamento
+		tabelaRoteamento := make([]byte, 2048)
+
+		msgLen, err = mestreConn.Read(tabelaRoteamento)
+		tabelaRoteamento = tabelaRoteamento[:msgLen]
+
+		errorHandler(err, "Erro ao receber tabela de roteamento:", false)
+
+		fmt.Println("Tabela de roteamento recebida do mestre: ")
+		err = json.Unmarshal(tabelaRoteamento, &tabelasDeRoteamento)
+		errorHandler(err, "Erro ao converter tabela de roteamento:", true)
+
+		for _, supers := range tabelasDeRoteamento {
+			fmt.Println(supers)
+		}
+	}
+
+	// Construção da Rede a partir daqui (todos os super nós se conectaram)
 
 	if <-ackChan {
 		//go handleServers(serversPort, ctx, h, servidoresTopic, roteamentoTopic)

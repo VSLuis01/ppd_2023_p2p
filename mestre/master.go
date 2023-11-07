@@ -3,8 +3,10 @@ package main
 import (
 	"bufio"
 	"crypto/sha1"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"math/rand"
 	"net"
@@ -48,6 +50,7 @@ func errorHandler(err error, msg string, fatal bool) {
 		}
 	}
 }
+
 func openFileAndGetIps(filename string) []string {
 	file, err := os.Open(filename)
 	errorHandler(err, "Erro ao abrir arquivo: ", true)
@@ -65,32 +68,49 @@ func openFileAndGetIps(filename string) []string {
 	return ips
 }
 
-func tcpHandleConnection(conn net.Conn, chaveDeConexao string, ackChan chan<- bool, i int) {
-	defer conn.Close()
+func tcpHandleMessages(conn net.Conn, ackChan chan<- bool) {
+	defer func(conn net.Conn) {
+		err := conn.Close()
+		errorHandler(err, "Erro ao fechar conexão TCP: ", true)
+	}(conn)
 
-	_, err := conn.Write([]byte(chaveDeConexao))
-	if err != nil {
-		fmt.Println("Erro ao enviar a chave de identificação:", err)
-		ackChan <- false
-		return
-	}
+	for {
+		buffer := make([]byte, 4000)
+		msgLen, err := conn.Read(buffer)
 
-	fmt.Println("Chave de identificação enviada para o super nó ", i+1)
-	ack := make([]byte, 3)
-	_, err = conn.Read(ack)
-	if err != nil {
-		fmt.Println("Erro ao ler o ACK do cliente: ", i+1, err)
-		ackChan <- false
-		return
-	}
+		if err == io.EOF {
+			fmt.Printf("[%s] A conexão foi fechada pelo nó.\n", conn.RemoteAddr().String())
+			err = conn.Close()
+			errorHandler(err, fmt.Sprintf("Erro ao fechar conexão com [%s]", conn.RemoteAddr().String()), false)
+			return
+		}
 
-	if string(ack) == "ACK" {
-		fmt.Println("ACK recebido do super nó ", i+1, " . Conexão estabelecida.")
-		ackChan <- true
-		return
-	} else {
-		fmt.Println("ACK inválido. Ação apropriada aqui (reenviar a chave, encerrar a conexão, etc.).")
-		ackChan <- false
+		errorHandler(err, "Erro ao ler mensagem TCP: ", false)
+
+		mensagem := make([]byte, msgLen)
+		copy(mensagem, buffer[:msgLen])
+
+		fmt.Printf("[%s] Enviou: %s\n", conn.RemoteAddr().String(), string(mensagem))
+
+		if strings.EqualFold(string(mensagem), "ack") {
+			ackChan <- true
+			continue
+		} else if strings.EqualFold(string(mensagem), "roteamento-supers") {
+			// slice dos ips dos supernos
+			var ips []string
+
+			for _, super := range tabelaRoteamentoSuperNos {
+				ips = append(ips, super.RemoteAddr().String())
+			}
+
+			bytesRoteamento, err := json.Marshal(ips)
+			errorHandler(err, "Erro ao serializar tabela de roteamento: ", false)
+
+			_, err = conn.Write(bytesRoteamento)
+			errorHandler(err, "Erro ao enviar tabela de roteamento: ", false)
+
+			continue
+		}
 	}
 }
 
@@ -127,7 +147,7 @@ func tcpHandleConnection(conn net.Conn, chaveDeConexao string, ackChan chan<- bo
 					return
 				}
 				//separa de quem veio a mensagem
-				if m.IpAtual == ipNextNo {
+				if m.IpAtual == ipNextNode {
 					fmt.Println("Mensagem recebida do nó proximo: ", m.Conteudo, " tipo: ", tipo)
 					sendMessageNext(buffer[:n])
 				} else {
@@ -138,28 +158,6 @@ func tcpHandleConnection(conn net.Conn, chaveDeConexao string, ackChan chan<- bo
 		}()
 	}
 }*/
-
-func sendMessageNext(mensagem []byte) {
-	conn, err := net.Dial("tcp", ipNextNo)
-	errorHandler(err, "Erro ao conectar ao servidor:", true)
-
-	fmt.Println("Conexão TCP estabelecida com sucesso")
-	defer conn.Close()
-
-	_, err = conn.Write(mensagem)
-	errorHandler(err, "Erro ao enviar mensagem", true)
-}
-
-func sendMessageAnt(mensagem []byte) {
-	conn, err := net.Dial("tcp", ipPrevNo)
-	errorHandler(err, "Erro ao conectar ao servidor:", true)
-
-	fmt.Println("Conexão TCP estabelecida com sucesso")
-	defer conn.Close()
-
-	_, err = conn.Write(mensagem)
-	errorHandler(err, "Erro ao enviar mensagem", true)
-}
 
 var characterRunes = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
 
@@ -226,17 +224,17 @@ func getNextAndPrevAuto(ipList []string, host string) (string, string, string) {
 	return next, prev, host
 }
 
-func getIpHost() string {
+func getIpHost() (string, error) {
 	addrs, err := net.InterfaceAddrs()
 	errorHandler(err, "Erro ao obter endereços da interface: ", true)
 
 	for _, address := range addrs {
 		ipNet, ok := address.(*net.IPNet)
 		if ok && !ipNet.IP.IsLoopback() && ipNet.IP.To4() != nil {
-			return ipNet.IP.String()
+			return ipNet.IP.String(), nil
 		}
 	}
-	return ""
+	return "", fmt.Errorf("não foi possível obter o endereço IP da máquina")
 }
 
 func init() {
@@ -254,28 +252,19 @@ func main() {
 	listIp := openFileAndGetIps("../ips")
 
 	// pega o ip da máquina sem a porta
-	ipHost := getIpHost()
-
-	fmt.Println(ipHost)
-
-	if *ipIndexFile == -1 {
-		ipNextNo, ipPrevNo, ipHost = getNextAndPrevAuto(listIp, ipHost)
-	} else {
-		// atribui a porta
-		ipNextNo, ipPrevNo, ipHost = getNextAndPrevAndHostManual(listIp, *ipIndexFile)
-	}
-
-	fmt.Println("ipNextNo: ", ipNextNo)
-	fmt.Println("ipPrevNo: ", ipPrevNo)
-	fmt.Println("ipHost: ", ipHost)
+	ipHost, err := getIpHost()
+	errorHandler(err, "", true)
 
 	///baseado no arquivo, encontra o ipatual e define proximo e anterior
+	if *ipIndexFile == -1 {
+		ipNextNode, ipPrevNode, ipHost = getNextAndPrevAuto(listIp, ipHost)
+	} else {
+		// atribui a porta
+		ipNextNode, ipPrevNode, ipHost = getNextAndPrevAndHostManual(listIp, *ipIndexFile)
+	}
 
 	//inicia recepçao de mensagens do anel
-	/*go receiveMessageAnelListening(ipHost)
-
-	m := mensagem{"iporigem", "ipdestino", "conteudo", "ipatual"}
-	m.enviarMensagemAnt("teste")*/
+	/*go receiveMessageAnelListening(ipHost) */
 
 	// servidor tcp
 	tcpListener, err := net.Listen("tcp", ipHost)
@@ -305,11 +294,19 @@ func main() {
 		// envia a chave de identificação unica do nó mestre
 		_, err = conn.Write([]byte(privateKey))
 		errorHandler(err, "Erro ao enviar a chave de identificação", false)
+
+		go tcpHandleMessages(conn, ackChan)
 	}
 
 	// Aguardar que ambos os nós se conectem
 	if <-ackChan && <-ackChan {
 		fmt.Println("Ambos os super nós se conectaram com sucesso!")
+
+		// envia confirmacao aos supernós
+		for _, conn := range tabelaRoteamentoSuperNos {
+			_, err = conn.Write([]byte("ok"))
+			errorHandler(err, "Erro ao enviar ok", false)
+		}
 	} else {
 		fmt.Println("Erro ao conectar um ou mais nós.")
 	}
