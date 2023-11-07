@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -31,6 +32,26 @@ type Mensagem struct {
 	Conteudo   []byte
 	IpHost     string
 	JumpsCount int
+}
+
+func splitMensagem(mensagem string) Mensagem {
+	mensagemSplit := strings.Split(mensagem, "#")
+
+	jumps, _ := strconv.Atoi(mensagemSplit[5])
+
+	return Mensagem{mensagemSplit[0], mensagemSplit[1], mensagemSplit[2], []byte(mensagemSplit[3]), mensagemSplit[4], jumps}
+}
+
+func newMensagem(tipo string, IpOrigem string, IpDestino string, conteudo []byte, IpHost string, jumpsCount int) Mensagem {
+	return Mensagem{tipo, IpOrigem, IpDestino, conteudo, IpHost, jumpsCount}
+}
+
+func (m *Mensagem) toString() string {
+	return fmt.Sprintf("%s#%s#%s#%s#%s#%d", m.Tipo, m.IpOrigem, m.IpDestino, m.Conteudo, m.IpHost, m.JumpsCount)
+}
+
+func (m *Mensagem) toBytes() []byte {
+	return []byte(m.toString())
 }
 
 func connectNextNode(conn *net.TCPConn) {
@@ -138,12 +159,14 @@ func tcpHandleMessages(conn net.Conn, ackChan chan<- bool) {
 		mensagem := make([]byte, msgLen)
 		copy(mensagem, buffer[:msgLen])
 
-		fmt.Printf("[%s] Enviou: %s\n", conn.RemoteAddr().String(), string(mensagem))
+		msg := splitMensagem(string(mensagem))
 
-		if strings.EqualFold(string(mensagem), "ack") {
+		fmt.Printf("[%s] Enviou: %s - Tipo > %s\n", conn.RemoteAddr().String(), string(msg.Conteudo), msg.Tipo)
+
+		if strings.EqualFold(msg.Tipo, "ack") {
 			ackChan <- true
 			continue
-		} else if strings.EqualFold(string(mensagem), "roteamento-supers") {
+		} else if strings.EqualFold(msg.Tipo, "roteamento-supers") {
 			// slice dos ips dos supernos
 			var ips []string
 
@@ -154,7 +177,9 @@ func tcpHandleMessages(conn net.Conn, ackChan chan<- bool) {
 			bytesRoteamento, err := json.Marshal(ips)
 			errorHandler(err, "Erro ao serializar tabela de roteamento: ", false)
 
-			_, err = conn.Write(bytesRoteamento)
+			msg = newMensagem("roteamento-supers", ipHost, conn.RemoteAddr().String(), bytesRoteamento, ipHost, 0)
+
+			_, err = conn.Write(msg.toBytes())
 			errorHandler(err, "Erro ao enviar tabela de roteamento: ", false)
 
 			continue
@@ -299,8 +324,9 @@ func main() {
 
 	listIp := openFileAndGetIps("../ips")
 
+	var err error
 	// pega o ip da máquina sem a porta
-	ipHost, err := getIpHost()
+	ipHost, err = getIpHost()
 	errorHandler(err, "", true)
 
 	///baseado no arquivo, encontra o ipatual e define proximo e anterior
@@ -314,8 +340,11 @@ func main() {
 	//inicia recepçao de mensagens do anel
 	/*go receiveMessageAnelListening(ipHost) */
 
+	tcpAddrIpHost, err := net.ResolveTCPAddr("tcp", ipHost)
+	errorHandler(err, "Erro ao resolver endereço TCP: ", true)
+
 	// servidor tcp
-	tcpListener, err := net.Listen("tcp", ipHost)
+	tcpListener, err := net.ListenTCP("tcp", tcpAddrIpHost)
 	errorHandler(err, "Erro ao criar servidor TCP: ", true)
 
 	defer func(tcpListener net.Listener) {
@@ -340,7 +369,8 @@ func main() {
 		tabelaRoteamentoSuperNos = append(tabelaRoteamentoSuperNos, conn)
 
 		// envia a chave de identificação unica do nó mestre
-		_, err = conn.Write([]byte(privateKey))
+		msg := newMensagem("chave", ipHost, "", []byte(privateKey), ipHost, 0)
+		_, err = conn.Write(msg.toBytes())
 		errorHandler(err, "Erro ao enviar a chave de identificação", false)
 
 		go tcpHandleMessages(conn, ackChan)
@@ -352,7 +382,10 @@ func main() {
 
 		// envia confirmacao aos supernós
 		for _, conn := range tabelaRoteamentoSuperNos {
-			_, err = conn.Write([]byte("ok"))
+
+			msg := newMensagem("ok", ipHost, conn.RemoteAddr().String(), []byte("ok"), ipHost, 0)
+
+			_, err = conn.Write(msg.toBytes())
 			errorHandler(err, "Erro ao enviar ok", false)
 		}
 	} else {

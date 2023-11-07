@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"math/rand"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -35,6 +37,26 @@ type Mensagem struct {
 	Conteudo   []byte
 	IpHost     string
 	JumpsCount int
+}
+
+func splitMensagem(mensagem string) Mensagem {
+	mensagemSplit := strings.Split(mensagem, "#")
+
+	jumps, _ := strconv.Atoi(mensagemSplit[5])
+
+	return Mensagem{mensagemSplit[0], mensagemSplit[1], mensagemSplit[2], []byte(mensagemSplit[3]), mensagemSplit[4], jumps}
+}
+
+func newMensagem(tipo string, IpOrigem string, IpDestino string, conteudo []byte, IpHost string, jumpsCount int) Mensagem {
+	return Mensagem{tipo, IpOrigem, IpDestino, conteudo, IpHost, jumpsCount}
+}
+
+func (m *Mensagem) toString() string {
+	return fmt.Sprintf("%s#%s#%s#%s#%s#%d", m.Tipo, m.IpOrigem, m.IpDestino, m.Conteudo, m.IpHost, m.JumpsCount)
+}
+
+func (m *Mensagem) toBytes() []byte {
+	return []byte(m.toString())
 }
 
 func connectNextNode(conn *net.TCPConn) {
@@ -122,22 +144,42 @@ func errorHandler(err error, msg string, fatal bool) {
 	}
 }
 
-func tcpHandleIncomingMessages(conn net.Conn) {
+func tcpHandleMessages(conn net.Conn, ackChan chan<- bool) {
 	defer func(conn net.Conn) {
 		err := conn.Close()
 		errorHandler(err, "Erro ao fechar conexão TCP: ", true)
 	}(conn)
 
-	buffer := make([]byte, 1024)
-
 	for {
-		msg, err := conn.Read(buffer)
+		buffer := make([]byte, 4000)
+		msgLen, err := conn.Read(buffer)
+
+		if err == io.EOF {
+			fmt.Printf("[%s] A conexão foi fechada pelo nó.\n", conn.RemoteAddr().String())
+			return
+		}
+
 		errorHandler(err, "Erro ao ler mensagem TCP: ", false)
 
-		fmt.Println(msg)
-		// verifica o tipo de mengagem recebida
-	}
+		mensagem := make([]byte, msgLen)
+		copy(mensagem, buffer[:msgLen])
 
+		fmt.Printf("[%s] Enviou: %s\n", conn.RemoteAddr().String(), string(mensagem))
+
+		if strings.EqualFold(string(mensagem), "ack") {
+			ackChan <- true
+			continue
+		} else if strings.EqualFold(string(mensagem), "roteamento-supers") {
+			// slice dos ips dos supernos
+			bytesRoteamento, err := json.Marshal(tabelasDeRoteamento)
+			errorHandler(err, "Erro ao serializar tabela de roteamento: ", false)
+
+			_, err = conn.Write(bytesRoteamento)
+			errorHandler(err, "Erro ao enviar tabela de roteamento: ", false)
+
+			continue
+		}
+	}
 }
 
 var characterRunes = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
@@ -205,17 +247,17 @@ func getNextAndPrevAuto(ipList []string, host string) (string, string, string) {
 	return next, prev, host
 }
 
-func getIpHost() string {
+func getIpHost() (string, error) {
 	addrs, err := net.InterfaceAddrs()
 	errorHandler(err, "Erro ao obter endereços da interface: ", true)
 
 	for _, address := range addrs {
 		ipNet, ok := address.(*net.IPNet)
 		if ok && !ipNet.IP.IsLoopback() && ipNet.IP.To4() != nil {
-			return ipNet.IP.String()
+			return ipNet.IP.String(), nil
 		}
 	}
-	return ""
+	return "", fmt.Errorf("não foi possível obter o endereço IP da máquina")
 }
 
 func init() {
@@ -234,9 +276,11 @@ func main() {
 
 	listIp := openFileAndGetIps("../ips")
 
+	var err error
 	///baseado no arquivo, encontra o ipatual e define proximo e anterior
 	// pega o ip da máquina sem a porta
-	ipHost = getIpHost()
+	ipHost, err = getIpHost()
+	errorHandler(err, "", true)
 
 	fmt.Println(ipHost)
 
@@ -257,7 +301,7 @@ func main() {
 
 	// Construção da Rede a partir daqui (todos os super nós se conectaram)
 	if <-finishMestreChan {
-		//go handleServers(serversPort, ctx, h, servidoresTopic, roteamentoTopic)
+		//go handleServers(ipHost)
 	}
 
 	// Wait forever
@@ -280,43 +324,54 @@ func configNoMestre(ipMestre string, finish chan<- bool) {
 	errorHandler(err, "Erro ao receber chave do mestre:", false)
 
 	chaveMestre = chaveMestre[:lenMsg]
-	fmt.Println("Chave recebida do mestre: ", string(chaveMestre))
 
-	privateKeyMestre = string(chaveMestre)
+	msg := splitMensagem(string(chaveMestre))
+
+	privateKeyMestre = string(msg.Conteudo)
 	//go tcpHandleIncomingMessages(mestreConn)
+	fmt.Println("Chave recebida do mestre: ", privateKeyMestre)
 
 	ack := "ACK"
 	fmt.Println("Enviando ACK para o nó mestre...")
-	_, err = mestreConn.Write([]byte(ack))
+
+	msg = newMensagem("ack", ipHost, ipMestre, []byte(ack), ipHost, 0)
+
+	_, err = mestreConn.Write(msg.toBytes())
 	errorHandler(err, "Erro ao enviar ACK:", true)
 
 	// esperando todos so super nos se registrarem
 	fmt.Println()
 	fmt.Println("Aguardando supernós se registrarem...")
 
-	confirmacao := make([]byte, 2)
+	confirmacao := make([]byte, 2048)
 	msgLen, err := mestreConn.Read(confirmacao)
 
 	errorHandler(err, "Erro ao receber confirmação do mestre:", true)
 	confirmacao = confirmacao[:msgLen]
 
-	if string(confirmacao) == "ok" {
+	msg = splitMensagem(string(confirmacao))
+
+	if string(msg.Conteudo) == "ok" {
 		// solicitando tabela de roteamento
 		fmt.Println("Solicitando tabela de roteamento ao mestre...")
 
-		_, err = mestreConn.Write([]byte("roteamento-supers"))
+		msg = newMensagem("roteamento-supers", ipHost, ipMestre, []byte(""), ipHost, 0)
+
+		_, err = mestreConn.Write(msg.toBytes())
 		errorHandler(err, "Erro ao solicitar tabela de roteamento:", true)
 
 		// recebe a tabela de roteamento
 		tabelaRoteamento := make([]byte, 2048)
 
 		msgLen, err = mestreConn.Read(tabelaRoteamento)
-		tabelaRoteamento = tabelaRoteamento[:msgLen]
-
 		errorHandler(err, "Erro ao receber tabela de roteamento:", false)
 
+		tabelaRoteamento = tabelaRoteamento[:msgLen]
+
+		msg = splitMensagem(string(tabelaRoteamento))
+
 		fmt.Println("Tabela de roteamento recebida do mestre: ")
-		err = json.Unmarshal(tabelaRoteamento, &tabelasDeRoteamento)
+		err = json.Unmarshal(msg.Conteudo, &tabelasDeRoteamento)
 		errorHandler(err, "Erro ao converter tabela de roteamento:", true)
 
 		for _, supers := range tabelasDeRoteamento {
@@ -326,6 +381,34 @@ func configNoMestre(ipMestre string, finish chan<- bool) {
 	}
 
 	finish <- false
+}
+
+func handleServers(ip string) bool {
+	ackChan := make(chan bool, 2)
+
+	tcpAddrIpHost, err := net.ResolveTCPAddr("tcp", ip)
+	errorHandler(err, "Erro ao resolver endereço TCP: ", true)
+
+	tcpListener, err := net.ListenTCP("tcp", tcpAddrIpHost)
+	errorHandler(err, "Erro ao criar servidor TCP: ", false)
+
+	defer tcpListener.Close()
+
+	for i := 0; i < 2; i++ {
+		conn, err := tcpListener.Accept()
+		errorHandler(err, "Erro ao aceitar conexão:", false)
+		fmt.Println("O servidor ", i+1, " se conectou...")
+
+		go tcpHandleMessages(conn, ackChan)
+	}
+
+	if <-ackChan && <-ackChan {
+		fmt.Println("Ambos os servidores se conectaram com sucesso!")
+	} else {
+		fmt.Println("Erro ao conectar um ou mais nós.")
+	}
+
+	return false
 }
 
 /*func receiveMessageAnelListening(adress string) {
@@ -371,54 +454,4 @@ func configNoMestre(ipMestre string, finish chan<- bool) {
 			}
 		}()
 	}
-}*/
-
-/*func handleServers(serversPort *string, ctx context.Context, h host.Host, topicServ *pubsub.Topic, topicRot *pubsub.Topic) bool {
-	//super nós podem se conectar a rede p2p
-	ackChan := make(chan bool, 2)
-	//concatena : com o servers port com
-
-	address := ":" + *serversPort
-
-	tcpListener, err := net.Listen("tcp", address)
-	errorHandler(err, "Erro ao criar servidor TCP: ", false)
-
-	defer tcpListener.Close()
-
-	for i := 0; i < 2; i++ {
-		fmt.Println("Aguardando servidor ", i+1, " se conectar...")
-		conn, err := tcpListener.Accept()
-		errorHandler(err, "Erro ao aceitar conexão:", true)
-
-		go tcpHandleIncomingMessages(conn, ackChan, i, ctx, h)
-	}
-
-	if <-ackChan && <-ackChan {
-		fmt.Println("Ambos os servidores se conectaram com sucesso!")
-	} else {
-		fmt.Println("Erro ao conectar um ou mais nós.")
-	}
-
-	fmt.Println("Enviando mensagem de broadcast aos servidores")
-
-	err = broadcastMessage(ctx, topicServ, []byte("ACK"))
-	errorHandler(err, "Erro ao enviar mensagem de broadcast: ", true)
-
-	// tabela de roteamento de todos os supernós
-	var tabelas []peer.AddrInfo
-
-	fmt.Println()
-	// listar todas as informações dos peers conectados
-	for _, p := range h.Network().Peers() {
-		tabelas = append(tabelas, h.Peerstore().PeerInfo(p))
-	}
-
-	printPeerstore(h)
-
-	byteTabela, err := json.Marshal(tabelas)
-	errorHandler(err, "Erro ao converter tabela para bytes: ", true)
-
-	err = broadcastMessage(ctx, topicRot, byteTabela)
-	errorHandler(err, "Erro ao enviar mensagem de broadcast: ", true)
-	return false
 }*/
