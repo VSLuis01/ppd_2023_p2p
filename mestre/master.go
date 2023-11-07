@@ -298,7 +298,7 @@ func main() {
 
 	for i := 0; i < 2; i++ {
 		_, err := tcpListener.Accept()
-		errorHandler(err, "Erro ao aceitar conexão: ", true)
+		errorHandler(err, "Erro ao aceitar conexão: ", false)
 
 		fmt.Println("O super nó", i+1, " se conectou com sucesso!")
 		//go tcpHandleConnection(conn, chaveDeConexao, ackChan, i)
