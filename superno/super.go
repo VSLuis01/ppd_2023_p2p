@@ -30,6 +30,8 @@ var privateKey string
 
 var privateKeyMestre string
 
+var chavesServidores []map[string]string
+
 type Mensagem struct {
 	Tipo       string
 	IpOrigem   string
@@ -164,19 +166,31 @@ func tcpHandleMessages(conn net.Conn, ackChan chan<- bool) {
 		mensagem := make([]byte, msgLen)
 		copy(mensagem, buffer[:msgLen])
 
-		fmt.Printf("[%s] Enviou: %s\n", conn.RemoteAddr().String(), string(mensagem))
+		msg := splitMensagem(string(mensagem))
 
-		if strings.EqualFold(string(mensagem), "ack") {
-			ackChan <- true
-			continue
-		} else if strings.EqualFold(string(mensagem), "roteamento-supers") {
+		fmt.Printf("[%s] Enviou: %s - Tipo > %s\n", conn.RemoteAddr().String(), string(msg.Conteudo), msg.Tipo)
+
+		if strings.EqualFold(msg.Tipo, "roteamento-supers") {
 			// slice dos ips dos supernos
 			bytesRoteamento, err := json.Marshal(tabelasDeRoteamento)
 			errorHandler(err, "Erro ao serializar tabela de roteamento: ", false)
 
-			_, err = conn.Write(bytesRoteamento)
+			msg = newMensagem("roteamento-supers", ipHost, msg.IpOrigem, bytesRoteamento, ipHost, 0)
+
+			_, err = conn.Write(msg.toBytes())
 			errorHandler(err, "Erro ao enviar tabela de roteamento: ", false)
 
+			continue
+		} else if strings.EqualFold(msg.Tipo, "chave") {
+			// adiciona a chave do servidor
+			chavesServidores = append(chavesServidores, map[string]string{string(msg.Conteudo): msg.IpOrigem})
+
+			msg = newMensagem("ack", ipHost, msg.IpOrigem, []byte("ack"), ipHost, 0)
+
+			_, err = conn.Write(msg.toBytes())
+			errorHandler(err, "Erro ao enviar ACK: ", false)
+
+			ackChan <- true
 			continue
 		}
 	}
@@ -269,7 +283,8 @@ func main() {
 
 	defer cancel()
 
-	ipIndexFile := flag.Int("fi", -1, "Porta destino")
+	ipIndexFile := flag.Int("fi", -1, "Indice o arquivo de ips")
+	portForServers := flag.String("p", "8001", "Porta destino")
 	flag.Parse()
 
 	//buffer := make([]byte, 1024)
@@ -301,7 +316,7 @@ func main() {
 
 	// Construção da Rede a partir daqui (todos os super nós se conectaram)
 	if <-finishMestreChan {
-		//go handleServers(ipHost)
+		go handleServers(ipHost, *portForServers)
 	}
 
 	// Wait forever
@@ -309,11 +324,19 @@ func main() {
 }
 
 func configNoMestre(ipMestre string, finish chan<- bool) {
-	tcpAddrMestre, _ := net.ResolveTCPAddr("tcp", ipMestre)
-	tcpAddrHost, _ := net.ResolveTCPAddr("tcp", ipHost)
 
 	// conecta ao mestre
-	mestreConn, err := net.DialTCP("tcp", tcpAddrHost, tcpAddrMestre)
+
+	ipMestreInitialConfig, _, _ := net.SplitHostPort(ipMestre)
+
+	ipMestreInitialConfig = ipMestreInitialConfig + ":8080"
+
+	tcpAddrMestreInitialConfig, _ := net.ResolveTCPAddr("tcp", ipMestreInitialConfig)
+	tcpAddrHost, _ := net.ResolveTCPAddr("tcp", ipHost)
+
+	// utiliza esse dial para gravar certo o Ip + Porta dos super nos. Para ficar de acordo com do arquivo
+	// o Dial normal gera uma porta aleatoria
+	mestreConn, err := net.DialTCP("tcp", tcpAddrHost, tcpAddrMestreInitialConfig)
 	errorHandler(err, "Erro ao conectar ao mestre:", true)
 	fmt.Println("Conexão TCP estabelecida com sucesso")
 
@@ -383,16 +406,25 @@ func configNoMestre(ipMestre string, finish chan<- bool) {
 	finish <- false
 }
 
-func handleServers(ip string) bool {
+func handleServers(ip string, portForServers string) bool {
 	ackChan := make(chan bool, 2)
 
-	tcpAddrIpHost, err := net.ResolveTCPAddr("tcp", ip)
-	errorHandler(err, "Erro ao resolver endereço TCP: ", true)
+	//tcpAddrIpHost, err := net.ResolveTCPAddr("tcp", ip)
+	//errorHandler(err, "Erro ao resolver endereço TCP: ", true)
 
-	tcpListener, err := net.ListenTCP("tcp", tcpAddrIpHost)
+	ip, _, _ = net.SplitHostPort(ip)
+
+	ip = ip + ":" + portForServers
+
+	tcpListener, err := net.Listen("tcp", ip)
 	errorHandler(err, "Erro ao criar servidor TCP: ", false)
+	if err != nil {
+		return false
+	}
 
 	defer tcpListener.Close()
+
+	fmt.Println("Servidor TCP iniciado...")
 
 	for i := 0; i < 2; i++ {
 		conn, err := tcpListener.Accept()
@@ -404,6 +436,13 @@ func handleServers(ip string) bool {
 
 	if <-ackChan && <-ackChan {
 		fmt.Println("Ambos os servidores se conectaram com sucesso!")
+
+		fmt.Println("Chaves dos servidores: ")
+		for _, servidores := range chavesServidores {
+			for k, v := range servidores {
+				fmt.Println("Chave: ", k, " IP: ", v)
+			}
+		}
 	} else {
 		fmt.Println("Erro ao conectar um ou mais nós.")
 	}

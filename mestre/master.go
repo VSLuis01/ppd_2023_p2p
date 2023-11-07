@@ -319,7 +319,7 @@ func main() {
 	//ctx := context.Background()
 
 	// definindo a porta do nó mestre
-	ipIndexFile := flag.Int("fi", -1, "Porta destino")
+	ipIndexFile := flag.Int("fi", -1, "Indice o arquivo de ips")
 	flag.Parse()
 
 	listIp := openFileAndGetIps("../ips")
@@ -340,7 +340,8 @@ func main() {
 	//inicia recepçao de mensagens do anel
 	/*go receiveMessageAnelListening(ipHost) */
 
-	tcpAddrIpHost, err := net.ResolveTCPAddr("tcp", ipHost)
+	ipHostInitialConfig, _, _ := net.SplitHostPort(ipHost)
+	tcpAddrIpHost, err := net.ResolveTCPAddr("tcp", ipHostInitialConfig+":8080")
 	errorHandler(err, "Erro ao resolver endereço TCP: ", true)
 
 	// servidor tcp
@@ -369,7 +370,7 @@ func main() {
 		tabelaRoteamentoSuperNos = append(tabelaRoteamentoSuperNos, conn)
 
 		// envia a chave de identificação unica do nó mestre
-		msg := newMensagem("chave", ipHost, "", []byte(privateKey), ipHost, 0)
+		msg := newMensagem("chave", ipHost, conn.RemoteAddr().String(), []byte(privateKey), ipHost, 0)
 		_, err = conn.Write(msg.toBytes())
 		errorHandler(err, "Erro ao enviar a chave de identificação", false)
 
