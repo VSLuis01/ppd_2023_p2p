@@ -2,20 +2,12 @@ package main
 
 import (
 	"bufio"
-	"context"
-	"crypto/rand"
-	"encoding/json"
+	"crypto/sha1"
 	"flag"
 	"fmt"
-	"github.com/libp2p/go-libp2p"
-	pubsub "github.com/libp2p/go-libp2p-pubsub"
-	"github.com/libp2p/go-libp2p/core/crypto"
-	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/libp2p/go-libp2p/core/network"
-	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
-	"io"
 	"log"
+	"math/rand"
 	"net"
 	"os"
 	"strings"
@@ -24,11 +16,12 @@ import (
 
 type TabelaDeRoteamento map[string][]multiaddr.Multiaddr
 
-var ipProximoNo string
-var ipNoAnterior string
+var ipNextNo string
+var ipPrevNo string
 var ipHost string
+var privateKey string
 
-type mensagem struct {
+/*type mensagem struct {
 	IpOrigem  string
 	IpDestino string
 	Conteudo  string
@@ -43,7 +36,7 @@ func (m *mensagem) enviarMensagemNext(tipo string) {
 func (m *mensagem) enviarMensagemAnt(tipo string) {
 	//envia mensagem para o proximo
 	sendMessageAnt([]byte(tipo + "#" + m.IpOrigem + "#" + m.IpDestino + "#" + m.Conteudo + "#" + ipHost))
-}
+}*/
 
 func errorHandler(err error, msg string, fatal bool) {
 	if fatal {
@@ -56,8 +49,8 @@ func errorHandler(err error, msg string, fatal bool) {
 		}
 	}
 }
-func openFileAndGetIps() []string {
-	file, err := os.Open("../ips")
+func openFileAndGetIps(filename string) []string {
+	file, err := os.Open(filename)
 	errorHandler(err, "Erro ao abrir arquivo: ", true)
 
 	defer file.Close()
@@ -71,97 +64,6 @@ func openFileAndGetIps() []string {
 	}
 
 	return ips
-}
-func printPeerstore(h host.Host) {
-	for _, p := range h.Network().Peers() {
-		fmt.Println("Conectado ao peer:", p)
-		fmt.Println("\tEndereços do peer:", h.Peerstore().PeerInfo(p))
-		fmt.Println()
-	}
-}
-
-func readData(rw *bufio.ReadWriter) {
-
-	for {
-		str, _ := rw.ReadString('\n')
-
-		if str == "" {
-			return
-		}
-		if str != "\n" {
-			// Green console colour: 	\x1b[32m
-			// Reset console colour: 	\x1b[0m
-			fmt.Printf("\x1b[32m%s\x1b[0m> ", str)
-		}
-
-	}
-}
-
-func handleStream(s network.Stream) {
-	log.Println("Um novo super nó foi conectado")
-
-	// Create a buffer stream for non-blocking read and write.
-	rw := bufio.NewReadWriter(bufio.NewReader(s), bufio.NewWriter(s))
-
-	go readData(rw)
-	//go writeData(rw)
-}
-
-func startPeer(h host.Host, streamHandler network.StreamHandler) (pontoDeConexao string) {
-	// Seta uma função como stream handler. Essa função é chamada quando um peer se conecta e inicia uma stream com esse protocolo.
-	h.SetStreamHandler("/handshake/master", streamHandler)
-
-	var port string
-	for _, la := range h.Network().ListenAddresses() {
-		if p, err := la.ValueForProtocol(multiaddr.P_TCP); err == nil {
-			port = p
-			break
-		}
-	}
-
-	if port == "" {
-		log.Println("Erro ao obter a porta TCP")
-		return
-	}
-
-	return fmt.Sprintf("/ip4/127.0.0.1/tcp/%v/p2p/%s", port, h.ID())
-}
-
-func makeHost(port int, rand io.Reader) (h host.Host, err error) {
-	// cria uma chave única privada RSA
-
-	privateKey, _, err := crypto.GenerateKeyPairWithReader(crypto.RSA, 2048, rand)
-	if err != nil {
-		log.Println("Erro ao criar chave privada: ", err)
-		return nil, err
-	}
-
-	// criando um multiaddr para ouvir em qualquer ip
-	sourcerMulti, err := multiaddr.NewMultiaddr(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port))
-
-	if err != nil {
-		log.Println("Falha ao criar endereço multiaddr: ", err)
-		return nil, err
-	}
-
-	return libp2p.New(
-		libp2p.ListenAddrs(sourcerMulti),
-		libp2p.Identity(privateKey),
-	)
-}
-
-func createAndJoinTopic(pubsub *pubsub.PubSub, topicName string) (*pubsub.Topic, error) {
-	return pubsub.Join(topicName)
-}
-
-func broadcastMessage(ctx context.Context, topic *pubsub.Topic, message []byte) {
-	// Publish the message to the topic
-	err := topic.Publish(ctx, message)
-	errorHandler(err, "Erro ao publicar mensagem: ", true)
-
-	// Wait for the message to be propagated to all peers
-	ctx, cancel := context.WithTimeout(ctx, time.Second*5)
-	defer cancel()
 }
 
 func tcpHandleConnection(conn net.Conn, chaveDeConexao string, ackChan chan<- bool, i int) {
@@ -192,7 +94,8 @@ func tcpHandleConnection(conn net.Conn, chaveDeConexao string, ackChan chan<- bo
 		ackChan <- false
 	}
 }
-func receiveMessageAnelListening(adress string) {
+
+/*func receiveMessageAnelListening(adress string) {
 	tcpListener, err := net.Listen("tcp", adress)
 	if err != nil {
 		errorHandler(err, "Erro ao ler mensagem TCP: ", false)
@@ -225,7 +128,7 @@ func receiveMessageAnelListening(adress string) {
 					return
 				}
 				//separa de quem veio a mensagem
-				if m.IpAtual == ipProximoNo {
+				if m.IpAtual == ipNextNo {
 					fmt.Println("Mensagem recebida do nó proximo: ", m.Conteudo, " tipo: ", tipo)
 					sendMessageNext(buffer[:n])
 				} else {
@@ -235,10 +138,10 @@ func receiveMessageAnelListening(adress string) {
 			}
 		}()
 	}
-}
+}*/
 
 func sendMessageNext(mensagem []byte) {
-	conn, err := net.Dial("tcp", ipProximoNo)
+	conn, err := net.Dial("tcp", ipNextNo)
 	errorHandler(err, "Erro ao conectar ao servidor:", true)
 
 	fmt.Println("Conexão TCP estabelecida com sucesso")
@@ -247,8 +150,9 @@ func sendMessageNext(mensagem []byte) {
 	_, err = conn.Write(mensagem)
 	errorHandler(err, "Erro ao enviar mensagem", true)
 }
+
 func sendMessageAnt(mensagem []byte) {
-	conn, err := net.Dial("tcp", ipNoAnterior)
+	conn, err := net.Dial("tcp", ipPrevNo)
 	errorHandler(err, "Erro ao conectar ao servidor:", true)
 
 	fmt.Println("Conexão TCP estabelecida com sucesso")
@@ -257,70 +161,134 @@ func sendMessageAnt(mensagem []byte) {
 	_, err = conn.Write(mensagem)
 	errorHandler(err, "Erro ao enviar mensagem", true)
 }
+
+var characterRunes = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+
+func RandomString(n int) string {
+	b := make([]rune, n)
+	for i := range b {
+		b[i] = characterRunes[rand.Intn(len(characterRunes))]
+	}
+	return string(b)
+}
+
+func newHashSha1(n ...int) string {
+	noRandomCharacters := 32
+
+	if len(n) > 0 {
+		noRandomCharacters = n[0]
+	}
+
+	randString := RandomString(noRandomCharacters)
+
+	hash := sha1.New()
+	hash.Write([]byte(randString))
+	bs := hash.Sum(nil)
+
+	return fmt.Sprintf("%x", bs)
+}
+
+func getNextAndPrevAndHostManual(ipList []string, ipIndexFile int) (next string, prev string, host string) {
+	if ipIndexFile == 0 {
+		prev = ipList[len(ipList)-1]
+		next = ipList[ipIndexFile+1]
+	} else if ipIndexFile == len(ipList)-1 {
+		prev = ipList[ipIndexFile-1]
+		next = ipList[0]
+	} else {
+		prev = ipList[ipIndexFile-1]
+		next = ipList[ipIndexFile+1]
+	}
+	host = ipList[ipIndexFile]
+
+	return
+}
+
+func getNextAndPrevAuto(ipList []string, host string) (string, string, string) {
+	var next string
+	var prev string
+	for i, valor := range ipList { //busca o ip da maquina na lista de ips
+		ipAtual, _, _ := net.SplitHostPort(valor)
+		if strings.Contains(host, ipAtual) {
+			if i == 0 {
+				prev = ipList[len(ipList)-1]
+				next = ipList[i+1]
+			} else if i == len(ipList)-1 {
+				prev = ipList[i-1]
+				next = ipList[0]
+			} else {
+				prev = ipList[i-1]
+				next = ipList[i+1]
+			}
+			host = valor
+			break
+		}
+	}
+	return next, prev, host
+}
+
+func getIpHost() string {
+	addrs, err := net.InterfaceAddrs()
+	errorHandler(err, "Erro ao obter endereços da interface: ", true)
+
+	for _, address := range addrs {
+		ipNet, ok := address.(*net.IPNet)
+		if ok && !ipNet.IP.IsLoopback() && ipNet.IP.To4() != nil {
+			return ipNet.IP.String()
+		}
+	}
+	return ""
+}
+
+func init() {
+	rand.New(rand.NewSource(time.Now().UnixNano()))
+}
+
 func main() {
-	ctx := context.Background()
+
+	//ctx := context.Background()
 
 	// definindo a porta do nó mestre
-	masterPort := flag.Int("p", 0, "Porta destino")
-	ipFile := flag.Int("d", -1, "Porta destino")
+	ipIndexFile := flag.Int("fi", -1, "Porta destino")
 	flag.Parse()
 
-	// criando um host que irá escutar em qualquer interface "0.0.0.0" e na porta "masterPort"
-	h, err := makeHost(*masterPort, rand.Reader)
-	errorHandler(err, "Erro ao criar host: ", true)
-	listIp := openFileAndGetIps()
-	fmt.Println(listIp)
+	listIp := openFileAndGetIps("../ips")
+
+	// pega o ip da máquina sem a porta
+	ipHost := getIpHost()
+
+	fmt.Println(ipHost)
+
+	if *ipIndexFile == -1 {
+		ipNextNo, ipPrevNo, ipHost = getNextAndPrevAuto(listIp, ipHost)
+	} else {
+		// atribui a porta
+		ipNextNo, ipPrevNo, ipHost = getNextAndPrevAndHostManual(listIp, *ipIndexFile)
+	}
+
+	fmt.Println("ipNextNo: ", ipNextNo)
+	fmt.Println("ipPrevNo: ", ipPrevNo)
+	fmt.Println("ipHost: ", ipHost)
 
 	///baseado no arquivo, encontra o ipatual e define proximo e anterior
-	ipHost := h.Addrs()[0].String()
-	if *ipFile == -1 {
-		for indice, valor := range listIp { //busca o ip da maquina na lista de ips
-			ipAtual, _, _ := net.SplitHostPort(valor)
-			if strings.Contains(ipHost, ipAtual) {
-				if indice == 0 {
-					ipNoAnterior = listIp[len(listIp)-1]
-					ipProximoNo = listIp[indice+1]
-				} else if indice == len(listIp)-1 {
-					ipNoAnterior = listIp[indice-1]
-					ipProximoNo = listIp[0]
-				} else {
-					ipNoAnterior = listIp[indice-1]
-					ipProximoNo = listIp[indice+1]
-				}
-				ipHost = valor
-				break
-			}
-		}
-	} else {
-		indice := *ipFile
-		if indice == 0 {
-			ipNoAnterior = listIp[len(listIp)-1]
-			ipProximoNo = listIp[indice+1]
-		} else if indice == len(listIp)-1 {
-			ipNoAnterior = listIp[indice-1]
-			ipProximoNo = listIp[0]
-		} else {
-			ipNoAnterior = listIp[indice-1]
-			ipProximoNo = listIp[indice+1]
-		}
-		ipHost = listIp[indice]
-	}
+
 	//inicia recepçao de mensagens do anel
-	go receiveMessageAnelListening(ipHost)
+	/*go receiveMessageAnelListening(ipHost)
 
-	// criando um novo pubsub para os supernós se conectarem ao nó mestre (conexao exclusiva entre eles)
-	psSuperMaster, err := pubsub.NewGossipSub(context.Background(), h)
-	errorHandler(err, "Erro ao criar pubsub: ", true)
-	ipHostIp, _, _ := net.SplitHostPort(ipHost)
+	m := mensagem{"iporigem", "ipdestino", "conteudo", "ipatual"}
+	m.enviarMensagemAnt("teste")*/
+
 	// servidor tcp
-	tcpListener, err := net.Listen("tcp", ipHostIp+":8080")
-
+	tcpListener, err := net.Listen("tcp", ipHost)
 	errorHandler(err, "Erro ao criar servidor TCP: ", true)
 
-	defer tcpListener.Close()
+	defer func(tcpListener net.Listener) {
+		err := tcpListener.Close()
+		errorHandler(err, "Erro ao fechar servidor TCP: ", true)
+	}(tcpListener)
 
-	// cria uma chave única privada RSA para os super nós conectarem
-	chaveDeConexao := startPeer(h, handleStream)
+	// cria uma chave única SHA1
+	//privateKey := newHashSha1()
 
 	// lida com conexoes de outros supernós
 	fmt.Println("Aguardando supernós se conectarem...")
@@ -329,10 +297,11 @@ func main() {
 	ackChan := make(chan bool, 2)
 
 	for i := 0; i < 2; i++ {
-		conn, err := tcpListener.Accept()
+		_, err := tcpListener.Accept()
 		errorHandler(err, "Erro ao aceitar conexão: ", true)
 
-		go tcpHandleConnection(conn, chaveDeConexao, ackChan, i)
+		fmt.Println("O super nó", i+1, " se conectou com sucesso!")
+		//go tcpHandleConnection(conn, chaveDeConexao, ackChan, i)
 	}
 
 	// Aguardar que ambos os nós se conectem
@@ -343,25 +312,6 @@ func main() {
 	}
 
 	fmt.Println("Enviando mensagem de broadcast...")
-
-	broadcastTopic, _ := createAndJoinTopic(psSuperMaster, "broadcast")
-	broadcastMessage(ctx, broadcastTopic, []byte("concluido"))
-
-	// tabela de roteamento de todos os supernós
-	var tabelas []peer.AddrInfo
-
-	fmt.Println()
-	// listar todas as informações dos peers conectados
-	for _, p := range h.Network().Peers() {
-		tabelas = append(tabelas, h.Peerstore().PeerInfo(p))
-	}
-	printPeerstore(h)
-
-	byteTabela, err := json.Marshal(tabelas)
-	errorHandler(err, "Erro ao converter tabela para bytes: ", true)
-
-	roteamentoTopic, _ := createAndJoinTopic(psSuperMaster, "roteamento")
-	broadcastMessage(ctx, roteamentoTopic, byteTabela)
 
 	select {}
 
