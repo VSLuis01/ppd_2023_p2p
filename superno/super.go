@@ -6,7 +6,6 @@ import (
 	"crypto/sha1"
 	"flag"
 	"fmt"
-	"github.com/libp2p/go-libp2p/core/peer"
 	"log"
 	"math/rand"
 	"net"
@@ -15,7 +14,7 @@ import (
 	"time"
 )
 
-var tabelasDeRoteamento []peer.AddrInfo
+var tabelasDeRoteamento []net.Conn
 var ipNextNode string
 var ipPrevNode string
 var ipHost string
@@ -180,7 +179,7 @@ func main() {
 
 	///baseado no arquivo, encontra o ipatual e define proximo e anterior
 	// pega o ip da máquina sem a porta
-	ipHost := getIpHost()
+	ipHost = getIpHost()
 
 	fmt.Println(ipHost)
 
@@ -208,13 +207,25 @@ func main() {
 
 	ipMestre := listIp[0]
 
+	tcpAddrMestre, _ := net.ResolveTCPAddr("tcp", ipMestre)
+	tcpAddrHost, _ := net.ResolveTCPAddr("tcp", ipHost)
+
 	// conecta ao mestre
-	mestreConn, err := net.Dial("tcp", ipMestre)
+	mestreConn, err := net.DialTCP("tcp", tcpAddrHost, tcpAddrMestre)
 	errorHandler(err, "Erro ao conectar ao mestre:", true)
+	fmt.Println("Conexão TCP estabelecida com sucesso")
+
+	// ver o que fazer com isso
+	chaveMestre := make([]byte, 1024)
+
+	// recebe a chave de identificação do no mestre
+	lenMsg, err := mestreConn.Read(chaveMestre)
+	errorHandler(err, "Erro ao receber chave do mestre:", false)
+
+	chaveMestre = chaveMestre[:lenMsg]
+	fmt.Println("Chave recebida do mestre: ", string(chaveMestre))
 
 	//go tcpHandleIncomingMessages(mestreConn)
-
-	fmt.Println("Conexão TCP estabelecida com sucesso")
 
 	ack := "ACK"
 	fmt.Println("Enviando ACK para o nó mestre...")

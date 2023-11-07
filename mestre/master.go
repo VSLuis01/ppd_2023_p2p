@@ -5,7 +5,6 @@ import (
 	"crypto/sha1"
 	"flag"
 	"fmt"
-	"github.com/multiformats/go-multiaddr"
 	"log"
 	"math/rand"
 	"net"
@@ -14,7 +13,7 @@ import (
 	"time"
 )
 
-type TabelaDeRoteamento map[string][]multiaddr.Multiaddr
+var tabelaRoteamentoSuperNos []net.Conn
 
 var ipNextNo string
 var ipPrevNo string
@@ -288,7 +287,7 @@ func main() {
 	}(tcpListener)
 
 	// cria uma chave única SHA1
-	//privateKey := newHashSha1()
+	privateKey = newHashSha1()
 
 	// lida com conexoes de outros supernós
 	fmt.Println("Aguardando supernós se conectarem...")
@@ -297,11 +296,15 @@ func main() {
 	ackChan := make(chan bool, 2)
 
 	for i := 0; i < 2; i++ {
-		_, err := tcpListener.Accept()
+		conn, err := tcpListener.Accept()
 		errorHandler(err, "Erro ao aceitar conexão: ", false)
 
 		fmt.Println("O super nó", i+1, " se conectou com sucesso!")
-		//go tcpHandleConnection(conn, chaveDeConexao, ackChan, i)
+		tabelaRoteamentoSuperNos = append(tabelaRoteamentoSuperNos, conn)
+
+		// envia a chave de identificação unica do nó mestre
+		_, err = conn.Write([]byte(privateKey))
+		errorHandler(err, "Erro ao enviar a chave de identificação", false)
 	}
 
 	// Aguardar que ambos os nós se conectem
@@ -310,8 +313,6 @@ func main() {
 	} else {
 		fmt.Println("Erro ao conectar um ou mais nós.")
 	}
-
-	fmt.Println("Enviando mensagem de broadcast...")
 
 	select {}
 
