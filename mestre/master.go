@@ -17,27 +17,75 @@ import (
 
 var tabelaRoteamentoSuperNos []net.Conn
 
-var ipNextNo string
-var ipPrevNo string
+var ipNextNode string
+var connNextNode *net.TCPConn = nil
+var ipPrevNode string
+var connPrevNode *net.TCPConn = nil
 var ipHost string
 var privateKey string
 
-/*type mensagem struct {
-	IpOrigem  string
-	IpDestino string
-	Conteudo  string
-	IpAtual   string
+type Mensagem struct {
+	Tipo       string
+	IpOrigem   string
+	IpDestino  string
+	Conteudo   string
+	IpHost     string
+	JumpsCount int
 }
 
-func (m *mensagem) enviarMensagemNext(tipo string) {
-	//envia mensagem para o proximo
-	sendMessageNext([]byte(tipo + "#" + m.IpOrigem + "#" + m.IpDestino + "#" + m.Conteudo + "#" + ipHost))
+func connectNextNode(conn *net.TCPConn) {
+	tcpAddrHost, _ := net.ResolveTCPAddr("tcp", ipHost)
+	tcpAddrNextNode, _ := net.ResolveTCPAddr("tcp", ipNextNode)
+
+	conn, err := net.DialTCP("tcp", tcpAddrHost, tcpAddrNextNode)
+	errorHandler(err, "Erro ao conectar com o próximo nó: ", false)
+
+	defer func(conn *net.TCPConn) {
+		err := conn.Close()
+		errorHandler(err, "Erro ao fechar conexão com o próximo nó: ", false)
+	}(conn)
 }
 
-func (m *mensagem) enviarMensagemAnt(tipo string) {
-	//envia mensagem para o proximo
-	sendMessageAnt([]byte(tipo + "#" + m.IpOrigem + "#" + m.IpDestino + "#" + m.Conteudo + "#" + ipHost))
-}*/
+func connectPrevNode(conn *net.TCPConn) {
+	tcpAddrHost, _ := net.ResolveTCPAddr("tcp", ipHost)
+	tcpAddrPrevNode, _ := net.ResolveTCPAddr("tcp", ipPrevNode)
+
+	conn, err := net.DialTCP("tcp", tcpAddrHost, tcpAddrPrevNode)
+	errorHandler(err, "Erro ao conectar com o anterior nó: ", false)
+
+	defer func(conn *net.TCPConn) {
+		err := conn.Close()
+		errorHandler(err, "Erro ao fechar conexão com o anterior nó: ", false)
+	}(conn)
+}
+
+func (m *Mensagem) sendNextNode() error {
+	if connNextNode == nil {
+		connectNextNode(connNextNode)
+	}
+
+	mensagem := fmt.Sprintf("%s#%s#%s#%s#%s#%d", m.Tipo, m.IpOrigem, m.IpDestino, m.Conteudo, m.IpHost, 0)
+
+	_, err := fmt.Fprintf(connNextNode, mensagem)
+	return err
+}
+
+func (m *Mensagem) sendPrevNode() error {
+	if connPrevNode == nil {
+		connectPrevNode(connPrevNode)
+	}
+
+	mensagem := fmt.Sprintf("%s#%s#%s#%s#%s#%d", m.Tipo, m.IpOrigem, m.IpDestino, m.Conteudo, m.IpHost, 0)
+
+	_, err := fmt.Fprintf(connPrevNode, mensagem)
+	return err
+}
+
+func printIps() {
+	fmt.Println("ipNextNode: ", ipNextNode)
+	fmt.Println("ipPrevNode: ", ipPrevNode)
+	fmt.Println("ipHost: ", ipHost)
+}
 
 func errorHandler(err error, msg string, fatal bool) {
 	if fatal {
