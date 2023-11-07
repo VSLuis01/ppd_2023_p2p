@@ -28,7 +28,7 @@ type Mensagem struct {
 	Tipo       string
 	IpOrigem   string
 	IpDestino  string
-	Conteudo   string
+	Conteudo   []byte
 	IpHost     string
 	JumpsCount int
 }
@@ -66,7 +66,8 @@ func (m *Mensagem) sendNextNode() error {
 
 	mensagem := fmt.Sprintf("%s#%s#%s#%s#%s#%d", m.Tipo, m.IpOrigem, m.IpDestino, m.Conteudo, m.IpHost, 0)
 
-	_, err := fmt.Fprintf(connNextNode, mensagem)
+	_, err := connNextNode.Write([]byte(mensagem))
+
 	return err
 }
 
@@ -77,7 +78,8 @@ func (m *Mensagem) sendPrevNode() error {
 
 	mensagem := fmt.Sprintf("%s#%s#%s#%s#%s#%d", m.Tipo, m.IpOrigem, m.IpDestino, m.Conteudo, m.IpHost, 0)
 
-	_, err := fmt.Fprintf(connPrevNode, mensagem)
+	_, err := connPrevNode.Write([]byte(mensagem))
+
 	return err
 }
 
