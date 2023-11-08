@@ -12,6 +12,7 @@ import (
 	"math/rand"
 	"net"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -183,8 +184,11 @@ func tcpHandleMessages(conn net.Conn, ackChan chan<- bool) {
 
 			continue
 		} else if strings.EqualFold(msg.Tipo, "chave") {
+
+			chaveIp := strings.Split(string(msg.Conteudo), "/")
+
 			// adiciona a chave do servidor
-			chavesServidores = append(chavesServidores, map[string]string{string(msg.Conteudo): msg.IpOrigem})
+			chavesServidores = append(chavesServidores, map[string]string{chaveIp[0]: chaveIp[1]})
 
 			msg = newMensagem("ack", ipHost, msg.IpOrigem, []byte("ack"), ipHost, 0)
 
@@ -277,6 +281,10 @@ func getIpHost() (string, error) {
 
 func init() {
 	rand.New(rand.NewSource(time.Now().UnixNano()))
+
+	cmd := exec.Command("clear") //Linux example, its tested
+	cmd.Stdout = os.Stdout
+	cmd.Run()
 }
 
 func main() {
@@ -313,11 +321,29 @@ func main() {
 
 	ipMestre := listIp[0]
 
-	go configNoMestre(ipMestre, finishMestreChan)
+	// conecta ao mestre
+
+	ipMestreInitialConfig, _, _ := net.SplitHostPort(ipMestre)
+
+	ipMestreInitialConfig = ipMestreInitialConfig + ":8080"
+
+	tcpAddrMestreInitialConfig, _ := net.ResolveTCPAddr("tcp", ipMestreInitialConfig)
+	//tcpAddrHost, _ := net.ResolveTCPAddr("tcp", ipHost)
+
+	// utiliza esse dial para gravar certo o Ip + Porta dos super nos. Para ficar de acordo com do arquivo
+	// o Dial normal gera uma porta aleatoria
+	mestreConn, err := net.DialTCP("tcp", nil, tcpAddrMestreInitialConfig)
+
+	defer mestreConn.Close()
+
+	errorHandler(err, "Erro ao conectar ao mestre:", true)
+	fmt.Println("Conexão TCP estabelecida com sucesso")
+
+	go configNoMestre(mestreConn, finishMestreChan)
 
 	// Construção da Rede a partir daqui (todos os super nós se conectaram)
 	if <-finishMestreChan {
-		go handleServers(ipHost, *portForServers)
+		handleServers(ipHost, *portForServers)
 	}
 
 	// recebe mensagens do anel
@@ -327,22 +353,7 @@ func main() {
 	select {}
 }
 
-func configNoMestre(ipMestre string, finish chan<- bool) {
-
-	// conecta ao mestre
-
-	ipMestreInitialConfig, _, _ := net.SplitHostPort(ipMestre)
-
-	ipMestreInitialConfig = ipMestreInitialConfig + ":8080"
-
-	tcpAddrMestreInitialConfig, _ := net.ResolveTCPAddr("tcp", ipMestreInitialConfig)
-	tcpAddrHost, _ := net.ResolveTCPAddr("tcp", ipHost)
-
-	// utiliza esse dial para gravar certo o Ip + Porta dos super nos. Para ficar de acordo com do arquivo
-	// o Dial normal gera uma porta aleatoria
-	mestreConn, err := net.DialTCP("tcp", tcpAddrHost, tcpAddrMestreInitialConfig)
-	errorHandler(err, "Erro ao conectar ao mestre:", true)
-	fmt.Println("Conexão TCP estabelecida com sucesso")
+func configNoMestre(mestreConn *net.TCPConn, finish chan<- bool) {
 
 	chaveMestre := make([]byte, 1024)
 
@@ -358,10 +369,9 @@ func configNoMestre(ipMestre string, finish chan<- bool) {
 	//go tcpHandleIncomingMessages(mestreConn)
 	fmt.Println("Chave recebida do mestre: ", privateKeyMestre)
 
-	ack := "ACK"
 	fmt.Println("Enviando ACK para o nó mestre...")
 
-	msg = newMensagem("ack", ipHost, ipMestre, []byte(ack), ipHost, 0)
+	msg = newMensagem("ack", ipHost, mestreConn.RemoteAddr().String(), []byte(ipHost), ipHost, 0)
 
 	_, err = mestreConn.Write(msg.toBytes())
 	errorHandler(err, "Erro ao enviar ACK:", true)
@@ -382,7 +392,7 @@ func configNoMestre(ipMestre string, finish chan<- bool) {
 		// solicitando tabela de roteamento
 		fmt.Println("Solicitando tabela de roteamento ao mestre...")
 
-		msg = newMensagem("roteamento-supers", ipHost, ipMestre, []byte(""), ipHost, 0)
+		msg = newMensagem("roteamento-supers", ipHost, mestreConn.RemoteAddr().String(), []byte(""), ipHost, 0)
 
 		// solicita a tabela de roteamento
 		_, err = mestreConn.Write(msg.toBytes())
@@ -402,13 +412,17 @@ func configNoMestre(ipMestre string, finish chan<- bool) {
 		err = json.Unmarshal(msg.Conteudo, &tabelasDeRoteamento)
 		errorHandler(err, "Erro ao converter tabela de roteamento:", true)
 
+		for _, supers := range tabelasDeRoteamento {
+			fmt.Println(supers)
+		}
+
 		finish <- true
 	}
 
 	finish <- false
 }
 
-func handleServers(ip string, portForServers string) bool {
+func handleServers(ip string, portForServers string) {
 	ackChan := make(chan bool, 2)
 
 	//tcpAddrIpHost, err := net.ResolveTCPAddr("tcp", ip)
@@ -421,12 +435,12 @@ func handleServers(ip string, portForServers string) bool {
 	tcpListener, err := net.Listen("tcp", ip)
 	errorHandler(err, "Erro ao criar servidor TCP: ", false)
 	if err != nil {
-		return false
+		return
 	}
 
 	defer tcpListener.Close()
 
-	fmt.Println("Servidor TCP iniciado...")
+	fmt.Println("Aguardando conexões dos servidores...")
 
 	for i := 0; i < 2; i++ {
 		conn, err := tcpListener.Accept()
@@ -449,7 +463,7 @@ func handleServers(ip string, portForServers string) bool {
 		fmt.Println("Erro ao conectar um ou mais nós.")
 	}
 
-	return false
+	return
 }
 
 // Receber conexoes da rede em anel
@@ -463,6 +477,7 @@ func receiveMessageAnelListening() {
 		return
 	}
 
+	fmt.Println("Servidor TCP do anel iniciado...")
 	for {
 		conn, err := tcpListener.Accept()
 		errorHandler(err, "Erro ao aceitar conexão TCP: ", false)

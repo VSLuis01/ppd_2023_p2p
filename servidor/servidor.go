@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	"net"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -153,6 +154,7 @@ func receiveMessageAnelListening() {
 		return
 	}
 
+	fmt.Println("Servidor TCP do anel iniciado com sucesso")
 	for {
 		conn, err := tcpListener.Accept()
 		errorHandler(err, "Erro ao aceitar conexão TCP: ", false)
@@ -228,59 +230,51 @@ func getNextAndPrevAuto(ipList []string, host string) (string, string, string) {
 
 // Conexões diretas com o nó servidor
 func tcpHandleMessages(conn net.Conn) {
-	defer func(conn net.Conn) {
-		err := conn.Close()
-		errorHandler(err, "Erro ao fechar conexão TCP: ", true)
-	}(conn)
-
-	msg := newMensagem("chave", ipHost, conn.RemoteAddr().String(), []byte(privateKey), ipHost, 0)
+	msg := newMensagem("chave", ipHost, conn.RemoteAddr().String(), []byte(privateKey+"/"+ipHost), ipHost, 0)
 
 	_, err := conn.Write(msg.toBytes())
 	errorHandler(err, "Erro ao enviar chave para o super nó: ", false)
 	fmt.Println("Chave enviada para o super nó")
 
-	for {
-		buffer := make([]byte, 4000)
-		msgLen, err := conn.Read(buffer)
+	buffer := make([]byte, 4000)
+	msgLen, err := conn.Read(buffer)
 
-		if err == io.EOF {
-			fmt.Printf("[%s] A conexão foi fechada pelo nó.\n", conn.RemoteAddr().String())
-			return
-		}
+	if err == io.EOF {
+		fmt.Printf("[%s] A conexão foi fechada pelo nó.\n", conn.RemoteAddr().String())
+		return
+	}
 
-		errorHandler(err, "Erro ao ler mensagem TCP: ", false)
+	errorHandler(err, "Erro ao ler mensagem TCP: ", false)
 
-		mensagem := make([]byte, msgLen)
-		copy(mensagem, buffer[:msgLen])
+	mensagem := make([]byte, msgLen)
+	copy(mensagem, buffer[:msgLen])
 
-		msg = splitMensagem(string(mensagem))
+	msg = splitMensagem(string(mensagem))
 
-		fmt.Printf("[%s] Enviou: %s - Tipo > %s\n", conn.RemoteAddr().String(), string(msg.Conteudo), msg.Tipo)
+	fmt.Printf("[%s] Enviou: %s - Tipo > %s\n", conn.RemoteAddr().String(), string(msg.Conteudo), msg.Tipo)
 
-		if strings.EqualFold(msg.Tipo, "ack") {
-			fmt.Println("Chave recebida pelo super nó")
+	if strings.EqualFold(msg.Tipo, "ack") {
+		fmt.Println("Chave recebida pelo super nó")
 
-			// Solicita a tabela dos super nós
-			msg = newMensagem("roteamento-supers", ipHost, conn.RemoteAddr().String(), []byte(""), ipHost, 0)
+		// Solicita a tabela dos super nós
+		msg = newMensagem("roteamento-supers", ipHost, conn.RemoteAddr().String(), []byte(""), ipHost, 0)
 
-			_, err = conn.Write(msg.toBytes())
-			errorHandler(err, "Erro ao solicitar tabela de roteamento dos super nós: ", false)
+		_, err = conn.Write(msg.toBytes())
+		errorHandler(err, "Erro ao solicitar tabela de roteamento dos super nós: ", false)
 
-			// Recebe a tabela de roteamento dos super nós
-			buffer = make([]byte, 1024)
-			msgLen, err = conn.Read(buffer)
+		// Recebe a tabela de roteamento dos super nós
+		buffer = make([]byte, 1024)
+		msgLen, err = conn.Read(buffer)
 
-			buffer = buffer[:msgLen]
-			msg = splitMensagem(string(buffer))
+		buffer = buffer[:msgLen]
+		msg = splitMensagem(string(buffer))
 
-			fmt.Println("Tabela de roteamento recebida do super nó: ")
-			err = json.Unmarshal(msg.Conteudo, &tabelasDeRoteamento)
-			errorHandler(err, "Erro ao converter tabela de roteamento:", true)
+		fmt.Println("Tabela de roteamento recebida do super nó: ")
+		err = json.Unmarshal(msg.Conteudo, &tabelasDeRoteamento)
+		errorHandler(err, "Erro ao converter tabela de roteamento:", true)
 
-			for _, supers := range tabelasDeRoteamento {
-				fmt.Println(supers)
-			}
-			continue
+		for _, supers := range tabelasDeRoteamento {
+			fmt.Println(supers)
 		}
 	}
 }
@@ -326,6 +320,10 @@ func getIpHost() (string, error) {
 
 func init() {
 	rand.New(rand.NewSource(time.Now().UnixNano()))
+
+	cmd := exec.Command("clear") //Linux example, its tested
+	cmd.Stdout = os.Stdout
+	cmd.Run()
 }
 
 func main() {
@@ -359,16 +357,19 @@ func main() {
 	ipSuperNo = ipSuperNo + ":" + *portaSuperNo
 
 	tcpAddrSuperNo, _ := net.ResolveTCPAddr("tcp", ipSuperNo)
-	tcpAddrIpHost, _ := net.ResolveTCPAddr("tcp", ipHost)
+	//tcpAddrIpHost, _ := net.ResolveTCPAddr("tcp", ipHost)
 
-	conn, err := net.DialTCP("tcp", tcpAddrIpHost, tcpAddrSuperNo)
+	conn, err := net.DialTCP("tcp", nil, tcpAddrSuperNo)
+	defer conn.Close()
 	errorHandler(err, "Erro ao conectar ao super nó:", true)
 
 	fmt.Println("Conexão TCP estabelecida com sucesso")
 
 	privateKey = newHashSha1()
 
-	go tcpHandleMessages(conn)
+	tcpHandleMessages(conn)
+
+	conn.Close()
 
 	// recebe mensagens do anel
 	go receiveMessageAnelListening()

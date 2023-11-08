@@ -11,12 +11,13 @@ import (
 	"math/rand"
 	"net"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
 )
 
-var tabelaRoteamentoSuperNos []net.Conn
+var tabelaRoteamentoSuperNos []string
 
 var ipNextNode string
 var connNextNode *net.TCPConn = nil
@@ -166,16 +167,12 @@ func tcpHandleMessages(conn net.Conn, ackChan chan<- bool) {
 
 		if strings.EqualFold(msg.Tipo, "ack") {
 			ackChan <- true
+
+			tabelaRoteamentoSuperNos = append(tabelaRoteamentoSuperNos, string(msg.Conteudo))
 			continue
 		} else if strings.EqualFold(msg.Tipo, "roteamento-supers") {
-			// slice dos ips dos supernos
-			var ips []string
 
-			for _, super := range tabelaRoteamentoSuperNos {
-				ips = append(ips, super.RemoteAddr().String())
-			}
-
-			bytesRoteamento, err := json.Marshal(ips)
+			bytesRoteamento, err := json.Marshal(tabelaRoteamentoSuperNos)
 			errorHandler(err, "Erro ao serializar tabela de roteamento: ", false)
 
 			msg = newMensagem("roteamento-supers", ipHost, conn.RemoteAddr().String(), bytesRoteamento, ipHost, 0)
@@ -199,6 +196,7 @@ func receiveMessageAnelListening() {
 		return
 	}
 
+	fmt.Println("Aguardando conexões do anel...")
 	for {
 		conn, err := tcpListener.Accept()
 		errorHandler(err, "Erro ao aceitar conexão TCP: ", false)
@@ -313,6 +311,10 @@ func getIpHost() (string, error) {
 
 func init() {
 	rand.New(rand.NewSource(time.Now().UnixNano()))
+
+	cmd := exec.Command("clear") //Linux example, its tested
+	cmd.Stdout = os.Stdout
+	cmd.Run()
 }
 
 func main() {
@@ -363,12 +365,14 @@ func main() {
 	// canais criados para controlar a conexão dos supernós
 	ackChan := make(chan bool, 2)
 
+	var conns []net.Conn
+
 	for i := 0; i < 2; i++ {
 		conn, err := tcpListener.Accept()
 		errorHandler(err, "Erro ao aceitar conexão: ", false)
 
 		fmt.Println("O super nó", i+1, " se conectou com sucesso!")
-		tabelaRoteamentoSuperNos = append(tabelaRoteamentoSuperNos, conn)
+		conns = append(conns, conn)
 
 		// envia a chave de identificação unica do nó mestre
 		msg := newMensagem("chave", ipHost, conn.RemoteAddr().String(), []byte(privateKey), ipHost, 0)
@@ -383,7 +387,7 @@ func main() {
 		fmt.Println("Ambos os super nós se conectaram com sucesso!")
 
 		// envia confirmacao aos supernós
-		for _, conn := range tabelaRoteamentoSuperNos {
+		for _, conn := range conns {
 
 			msg := newMensagem("ok", ipHost, conn.RemoteAddr().String(), []byte("ok"), ipHost, 0)
 
