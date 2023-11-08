@@ -19,10 +19,19 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
-var tabelasDeRoteamento []peer.AddrInfo
+type HostAnel struct {
+	IDHost string
+	IPHost string
+}
+
+var tabelasDeRoteamento []HostAnel
+var tabelasDeRoteamentoServidores []HostAnel
+var mutexTabelasDeServ = sync.Mutex{}
+var mutexTabelasDeSupers = sync.Mutex{}
 var ipProximoNo string
 var ipNoAnterior string
 var ipHost string
@@ -89,14 +98,38 @@ func listensSubs(ctx context.Context, sub *pubsub.Subscription, topic *pubsub.To
 			continue
 		}
 
-		if topic.String() == "roteamento" {
-			err := json.Unmarshal(msg.Data, &tabelasDeRoteamento)
+		if topic.String() == "roteamentoSuper" {
+			var tabelaAux []peer.AddrInfo
+			var tabelaAux2 []peer.AddrInfo
+			tabelaRoteamentoAux := tabelasDeRoteamento
+			err := json.Unmarshal(msg.Data, &tabelaAux)
+			for _, p := range tabelaAux { //laço para evitar itens duplicados
+				for _, p2 := range tabelasDeRoteamento {
+					existe := false
+					if p.ID.String() == p2.IDHost {
+						existe = true
+
+					}
+					if !existe {
+						for _, p3 := range p.Addrs {
+							if !strings.Contains(p3.String(), "127.0.0.1") {
+								ipOfHost := strings.Split(p3.String(), "/")[2]
+								server := HostAnel{IDHost: p.ID.String(), IPHost: ipOfHost}
+								tabelaRoteamentoAux = append(tabelaRoteamentoAux, server)
+							}
+							tabelaAux2 = append(tabelaAux2, p)
+						}
+
+					}
+				}
+			}
+			tabelasDeRoteamento = tabelaRoteamentoAux
 
 			if err != nil {
 				fmt.Println("Erro ao deserializar roteamento: ", err)
 			} else {
 				// deu tudo certo, ir para a parte de servidores
-				for _, p := range tabelasDeRoteamento {
+				for _, p := range tabelaAux2 {
 					if p.ID.String() != h.ID().String() {
 						err := h.Connect(ctx, p)
 						if err != nil {
@@ -107,6 +140,48 @@ func listensSubs(ctx context.Context, sub *pubsub.Subscription, topic *pubsub.To
 				ackChan <- true
 			}
 		} else {
+			if topic.String() == "roteamentoServer" {
+				var tabelaAux []peer.AddrInfo
+				var tabelaAux2 []peer.AddrInfo
+				tabelaAuxServers := tabelasDeRoteamentoServidores
+				err := json.Unmarshal(msg.Data, &tabelaAux)
+				for _, p := range tabelaAux { //laço para evitar itens duplicados
+					for _, p2 := range tabelasDeRoteamentoServidores {
+						existe := false
+						if p.ID.String() == p2.IPHost {
+							existe = true
+
+						}
+						if !existe {
+							for _, p3 := range p.Addrs {
+								if !strings.Contains(p3.String(), "127.0.0.1") {
+									ipOfHost := strings.Split(p3.String(), "/")[2]
+									server := HostAnel{IDHost: p.ID.String(), IPHost: ipOfHost}
+									tabelaAuxServers = append(tabelaAuxServers, server)
+								}
+							}
+
+							tabelaAux2 = append(tabelaAux2, p)
+						}
+					}
+				}
+				tabelasDeRoteamentoServidores = tabelaAuxServers
+
+				if err != nil {
+					fmt.Println("Erro ao deserializar roteamento: ", err)
+				} else {
+					// deu tudo certo, ir para a parte de servidores
+					for _, p := range tabelaAux2 {
+						if p.ID.String() != h.ID().String() {
+							err := h.Connect(ctx, p)
+							if err != nil {
+								fmt.Println("Erro ao conectar com supernó: ", err)
+							}
+						}
+					}
+					ackChan <- true
+				}
+			}
 			fmt.Printf("Received message: %s\n", string(msg.Data))
 		}
 	}
@@ -216,6 +291,7 @@ func main() {
 
 	serversPort := flag.String("p", "0", "Porta para conexão com servidores")
 	ipFile := flag.Int("d", -1, "Porta destino")
+	//ipHostFlag := flag.String("h", "0", "Porta destino")
 	flag.Parse()
 	buffer := make([]byte, 1024)
 
@@ -228,23 +304,10 @@ func main() {
 	///baseado no arquivo, encontra o ipatual e define proximo e anterior
 	ipHost = h.Addrs()[0].String()
 	if *ipFile == -1 {
-		for indice, valor := range listIp { //busca o ip da maquina na lista de ips
-			ipAtual, _, _ := net.SplitHostPort(valor)
-			if strings.Contains(ipHost, ipAtual) {
-				if indice == 0 {
-					ipNoAnterior = listIp[len(listIp)-1]
-					ipProximoNo = listIp[indice+1]
-				} else if indice == len(listIp)-1 {
-					ipNoAnterior = listIp[indice-1]
-					ipProximoNo = listIp[0]
-				} else {
-					ipNoAnterior = listIp[indice-1]
-					ipProximoNo = listIp[indice+1]
-				}
-				ipHost = valor
-				break
-			}
-		}
+
+		fmt.Println("informe o indice o arquivo que representa esse host com -d")
+		os.Exit(1)
+
 	} else {
 		indice := *ipFile
 		if indice == 0 {
@@ -260,11 +323,6 @@ func main() {
 		ipHost = listIp[indice]
 	}
 	go receiveMessageAnelListening(ipHost)
-	var m mensagem
-	m.IpDestino = ipProximoNo
-	m.IpOrigem = ipHost
-	m.Conteudo = "teste"
-	m.enviarMensagemAnt("teste")
 
 	// criação do pubsub
 	pb, err := pubsub.NewGossipSub(context.Background(), h)
@@ -327,6 +385,7 @@ func main() {
 }
 func receiveMessageAnelListening(adress string) {
 	tcpListener, err := net.Listen("tcp", adress)
+	defer tcpListener.Close()
 	if err != nil {
 		errorHandler(err, "Erro ao ler mensagem TCP: ", false)
 		return
@@ -357,12 +416,103 @@ func receiveMessageAnelListening(adress string) {
 					errorHandler(err, "Erro ao ler mensagem TCP: ", false)
 					return
 				}
-				//separa de quem veio a mensagem
-				if m.IpAtual == ipProximoNo {
-					fmt.Println("Mensagem recebida do nó proximo: ", m.Conteudo, " tipo: ", tipo)
-					sendMessageNext(buffer[:n])
+				if m.IpOrigem == ipHost {
+					continue
+				}
+				if m.IpDestino != ipHost {
+					if m.IpAtual == ipProximoNo {
+						fmt.Println("Mensagem recebida do nó proximo: ", m.Conteudo, " tipo: ", tipo)
+						sendMessageAnt(buffer[:n])
+					} else {
+						if m.IpAtual == ipNoAnterior {
+							fmt.Println("Mensagem recebida do nó anterior: ")
+							sendMessageNext(buffer[:n])
+						}
+						continue
+					}
+					//separa de quem veio a mensagem
 				} else {
-					fmt.Println("Mensagem recebida do nó anterior: ")
+
+					//TODO: tratar mensagem de novo servidor
+
+					//TODO: ATUALIZAR ip anterior
+					fmt.Println("Mensagem recebida de um nó desconhecido: ")
+					switch tipo {
+					case "NovoServidor":
+						//myp := peer.AddrInfo{ID: peer.ID(m.Conteudo), Addrs: []multiaddr.Multiaddr{multiaddr.StringCast(conn.RemoteAddr().String())}}
+						myp := HostAnel{IDHost: m.Conteudo, IPHost: conn.RemoteAddr().String()}
+						mutexTabelasDeServ.Lock()
+						tabelaAux := tabelasDeRoteamentoServidores
+						existe := false
+						for _, p := range tabelaAux {
+							if p.IDHost == m.Conteudo {
+								existe = true
+							}
+						}
+						if !existe {
+							tabelasDeRoteamentoServidores = append(tabelasDeRoteamentoServidores, myp)
+						} else {
+							fmt.Println("Servidor já registrado")
+						}
+
+						mutexTabelasDeServ.Unlock()
+						fmt.Println("Novo servidor registrado: ", m.Conteudo, " ; ", conn.RemoteAddr().String())
+						conn.Write([]byte(ipNoAnterior))
+						conn.Read(buffer)
+						//verificar ack
+						if string(buffer[:n]) == "ACK" {
+							fmt.Println("ACK recebido")
+							ipNoAnterior = conn.RemoteAddr().String()
+							byteTabela, _ := json.Marshal(tabelasDeRoteamentoServidores)
+							for _, p := range tabelasDeRoteamentoServidores {
+								fmt.Println("Enviando tabela para: ", p.IPHost)
+								mensagemEnvio := mensagem{IpOrigem: ipHost, IpDestino: p.IPHost, Conteudo: string(byteTabela), IpAtual: ipHost}
+								mensagemEnvio.enviarMensagemNext("AtualizarListaServer")
+
+							}
+							for _, p := range tabelasDeRoteamento {
+								fmt.Println("Enviando tabela para: ", p.IPHost)
+								mensagemEnvio := mensagem{IpOrigem: ipHost, IpDestino: p.IPHost, Conteudo: string(byteTabela), IpAtual: ipHost}
+								mensagemEnvio.enviarMensagemNext("AtualizarListaServer")
+							}
+
+							//mensagemEnvio := mensagem{IpOrigem: ipHost, IpDestino: ipHost, Conteudo: string(byteTabela), IpAtual: ipHost}
+							//mensagemEnvio.enviarMensagemNext("AtualizarListaServer")
+						}
+					case "AtualizarListaServer":
+
+						var tabelaAux []HostAnel  //maquinas recebidas
+						var tabelaAux2 []HostAnel //maquinas ainda nao registradas
+						err := json.Unmarshal([]byte(m.Conteudo), &tabelaAux)
+						if err != nil {
+							fmt.Println("Erro ao deserializar roteamento: ", err)
+						}
+
+						mutexTabelasDeServ.Lock()
+						for _, p := range tabelaAux { //laço para evitar itens duplicados
+							existe := false
+							for _, p2 := range tabelasDeRoteamentoServidores {
+
+								if p.IDHost == p2.IDHost {
+									existe = true
+
+								}
+
+							}
+							if !existe {
+								tabelaAux2 = append(tabelaAux2, p)
+							}
+						}
+						tabelasDeRoteamentoServidores = append(tabelasDeRoteamentoServidores, tabelaAux2...)
+						mutexTabelasDeServ.Unlock()
+					case "AtualizaProximo":
+						ipProximoNo = m.Conteudo
+						conn.Write([]byte("ACK"))
+					default:
+
+						fmt.Println("mensagem invalida")
+					}
+
 				}
 
 			}

@@ -19,9 +19,21 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 )
 
-var tabelasDeRoteamento []peer.AddrInfo
+type HostAnel struct {
+	IDHost string
+	IPHost string
+}
+
+var tabelasDeRoteamento []HostAnel
+var tabelasDeRoteamentoServidores []HostAnel
+
+var tabelasDeRoteamentoSuper []peer.AddrInfo
+var tabelasDeRoteamentoClientes []peer.AddrInfo
+var mutexTabelasDeSupers = sync.Mutex{}
+var mutexTabelasDeServ = sync.Mutex{}
 var ipProximoNo string
 var ipNoAnterior string
 var ipHost string
@@ -71,6 +83,7 @@ func openFileAndGetIps() []string {
 }
 func receiveMessageAnelListening(adress string) {
 	tcpListener, err := net.Listen("tcp", adress)
+	defer tcpListener.Close()
 	if err != nil {
 		errorHandler(err, "Erro ao ler mensagem TCP: ", false)
 		return
@@ -93,6 +106,8 @@ func receiveMessageAnelListening(adress string) {
 				if len(aux) < 5 { //evita mensagens com formato invalido
 					continue
 				}
+
+				//formata mensagem recebida
 				fmt.Println("Mensagem recebida: [", aux, "],[", recebimento, "]")
 				m := mensagem{IpOrigem: aux[1], IpDestino: aux[2], Conteudo: aux[3], IpAtual: aux[4]}
 				fmt.Println("mensagem criada")
@@ -101,15 +116,66 @@ func receiveMessageAnelListening(adress string) {
 					errorHandler(err, "Erro ao ler mensagem TCP: ", false)
 					return
 				}
-				//separa de quem veio a mensagem
-				if m.IpAtual == ipProximoNo {
-					fmt.Println("Mensagem recebida do nó proximo: ", m.Conteudo, " tipo: ", tipo)
-					sendMessageNext(buffer[:n])
+
+				if m.IpOrigem == ipHost {
+					continue
+				}
+				if m.IpDestino != ipHost {
+					if m.IpAtual == ipProximoNo {
+						fmt.Println("Mensagem recebida do nó proximo: ", m.Conteudo, " tipo: ", tipo)
+						sendMessageAnt(buffer[:n])
+					} else {
+						if m.IpAtual == ipNoAnterior {
+							fmt.Println("Mensagem recebida do nó anterior: ")
+							sendMessageNext(buffer[:n])
+						}
+						continue
+					}
+					//separa de quem veio a mensagem
 				} else {
-					fmt.Println("Mensagem recebida do nó anterior: ")
+					//TODO: tratar mensagem de novo servidor
+
+					//TODO: ATUALIZAR ip anterior
+					fmt.Println("Mensagem recebida de um nó desconhecido: ")
+					switch tipo {
+
+					case "AtualizaProximo":
+						ipProximoNo = m.Conteudo
+						conn.Write([]byte("ACK"))
+					case "AtualizarListaServer":
+
+						var tabelaAux []HostAnel  //maquinas recebidas
+						var tabelaAux2 []HostAnel //maquinas ainda nao registradas
+						err := json.Unmarshal([]byte(m.Conteudo), &tabelaAux)
+						if err != nil {
+							fmt.Println("Erro ao deserializar roteamento: ", err)
+						}
+
+						mutexTabelasDeServ.Lock()
+						for _, p := range tabelaAux { //laço para evitar itens duplicados
+							existe := false
+							for _, p2 := range tabelasDeRoteamentoServidores {
+
+								if p.IDHost == p2.IDHost {
+									existe = true
+
+								}
+
+							}
+							if !existe {
+								tabelaAux2 = append(tabelaAux2, p)
+							}
+						}
+						tabelasDeRoteamentoServidores = append(tabelasDeRoteamentoServidores, tabelaAux2...)
+						mutexTabelasDeServ.Unlock()
+					default:
+						fmt.Println("mensagem invalida")
+					}
+
 				}
 
 			}
+
 		}()
 	}
 }
@@ -168,7 +234,7 @@ func handleStream(s network.Stream) {
 }
 
 func tcpHandleConnection(conn net.Conn, chaveDeConexao string, ackChan chan<- bool, i int) {
-	//TODO: implementar tratamento da conexão e conexão p2p
+
 	defer conn.Close()
 
 	_, err := conn.Write([]byte(chaveDeConexao))
@@ -210,11 +276,13 @@ func listensSubs(ctx context.Context, sub *pubsub.Subscription, topic *pubsub.To
 		}
 
 		if topic.String() == "roteamento" {
-			err := json.Unmarshal(msg.Data, &tabelasDeRoteamento)
+			mutexTabelasDeSupers.Lock()
+			err := json.Unmarshal(msg.Data, &tabelasDeRoteamentoSuper)
 			if err != nil {
 				log.Println("Erro ao deserializar roteamento: ", err)
 			}
-			log.Println("Recebido tabela de roteamento: ", tabelasDeRoteamento)
+			log.Println("Recebido tabela de roteamento: ", tabelasDeRoteamentoSuper)
+			mutexTabelasDeSupers.Unlock()
 		} else {
 			log.Printf("Received message: %s\n", string(msg.Data))
 		}
@@ -275,10 +343,54 @@ func startPeer(h host.Host, streamHandler network.StreamHandler) (pontoDeConexao
 
 	return fmt.Sprintf("/ip4/127.0.0.1/tcp/%v/p2p/%s", port, h.ID())
 }
+func joinRing(host host.Host, ipSuper string) {
+	//conecta solicita conexão super nó
+	buffer := make([]byte, 1024)
 
+	conn, err := net.Dial("tcp", ipSuper)
+	conn.LocalAddr().String()
+	ipHost = conn.LocalAddr().String()
+	//utiliza o ip e porta da primeira conexão para a conexão em anel
+
+	defer conn.Close()
+	ipProximoNo = ipSuper
+	errorHandler(err, "Erro ao conectar ao servidor:", true)
+
+	//envia mensagem de solicitação de conexão
+	m := mensagem{IpOrigem: ipHost, IpDestino: ipSuper, Conteudo: host.ID().String(), IpAtual: ipHost}
+	//m.enviarMensagemNext("NovoServidor")
+	conn.Write(([]byte("NovoServidor" + "#" + m.IpOrigem + "#" + m.IpDestino + "#" + m.Conteudo + "#" + ipHost)))
+	conn.Read(buffer)
+	fmt.Println("Mensagem recebida, o ip do anterior é: ", string(buffer))
+
+	ipNoAnterior = string(buffer)
+	ipNoAnterior = strings.TrimSpace(ipNoAnterior)
+	fmt.Println("guardo anterior [", ipNoAnterior, "]")
+	//enviar  ack
+	conn.Write([]byte("ACK"))
+	conn.Close()
+	fmt.Println("passou do ack")
+	//enviar mensagem para o anterior atualizar o proximo ip
+	conn2, err := net.Dial("tcp", ipNoAnterior)
+
+	if err != nil {
+		fmt.Println("Erro ao conectar ao servidor:", err)
+	}
+	errorHandler(err, "Erro ao conectar ao servidor:", true)
+	m = mensagem{IpOrigem: ipHost, IpDestino: ipNoAnterior, Conteudo: ipHost, IpAtual: ipHost}
+	conn2.Write(([]byte("AtualizaProximo" + "#" + m.IpOrigem + "#" + m.IpDestino + "#" + m.Conteudo + "#" + ipHost)))
+	conn2.Read(buffer)
+	if string(buffer) != "ACK" {
+		fmt.Println("Erro ao atualizar anterior")
+	} else {
+		fmt.Println("anterior atualizado com sucesso")
+	}
+}
 func main() {
 	ctx := context.Background()
 	ipFile := flag.Int("d", -1, "Porta destino")
+	ipConect := flag.String("c", "", "<ip>:<porta> de um superno. ")
+
 	flag.Parse()
 	//definir ip e porta do servidor
 
@@ -287,71 +399,79 @@ func main() {
 	listIp := openFileAndGetIps()
 	fmt.Println(listIp)
 
-	///baseado no arquivo, encontra o ipatual e define proximo e anterior
+	///baseado no arquivo, encontra o ipAtual e define proximo e anterior
 	ipHost := h.Addrs()[0].String()
-	if *ipFile == -1 {
-		for indice, valor := range listIp { //busca o ip da maquina na lista de ips
-			ipAtual, _, _ := net.SplitHostPort(valor)
-			if strings.Contains(ipHost, ipAtual) {
-				if indice == 0 {
-					ipNoAnterior = listIp[len(listIp)-1]
-					ipProximoNo = listIp[indice+1]
-				} else if indice == len(listIp)-1 {
-					ipNoAnterior = listIp[indice-1]
-					ipProximoNo = listIp[0]
-				} else {
-					ipNoAnterior = listIp[indice-1]
-					ipProximoNo = listIp[indice+1]
+	if *ipConect == "" { //nesse caso o servidor é da configuração inicial
+		if *ipFile == -1 {
+			for indice, valor := range listIp { //busca o ip da maquina na lista de ips
+				ipAtual, _, _ := net.SplitHostPort(valor)
+				if strings.Contains(ipHost, ipAtual) {
+					if indice == 0 {
+						ipNoAnterior = listIp[len(listIp)-1]
+						ipProximoNo = listIp[indice+1]
+					} else if indice == len(listIp)-1 {
+						ipNoAnterior = listIp[indice-1]
+						ipProximoNo = listIp[0]
+					} else {
+						ipNoAnterior = listIp[indice-1]
+						ipProximoNo = listIp[indice+1]
+					}
+					ipHost = valor
+					break
 				}
-				ipHost = valor
-				break
 			}
-		}
-	} else {
-		indice := *ipFile
-		fmt.Println("Indice: ", indice)
-		if indice == 0 {
-			ipNoAnterior = listIp[len(listIp)-1]
-			ipProximoNo = listIp[indice+1]
-		} else if indice == len(listIp)-1 {
-			ipNoAnterior = listIp[indice-1]
-			ipProximoNo = listIp[0]
 		} else {
-			ipNoAnterior = listIp[indice-1]
-			ipProximoNo = listIp[indice+1]
+			indice := *ipFile
+			fmt.Println("Indice: ", indice)
+			if indice == 0 {
+				ipNoAnterior = listIp[len(listIp)-1]
+				ipProximoNo = listIp[indice+1]
+			} else if indice == len(listIp)-1 {
+				ipNoAnterior = listIp[indice-1]
+				ipProximoNo = listIp[0]
+			} else {
+				ipNoAnterior = listIp[indice-1]
+				ipProximoNo = listIp[indice+1]
+			}
+			ipHost = listIp[indice]
 		}
-		ipHost = listIp[indice]
+		go receiveMessageAnelListening(ipHost)
+
+		pb, err := pubsub.NewGossipSub(context.Background(), h)
+		errorHandler(err, "Erro ao criar pubsub: ", true)
+
+		broadcastTopic, err := createAndJoinTopic(pb, "broadcast")
+		errorHandler(err, "Erro ao criar tópico broadcast: ", true)
+		broadcastSub, err := subscribeToTopic(broadcastTopic)
+		errorHandler(err, "Erro ao se inscrever no tópico broadcast: ", true)
+		go listensSubs(ctx, broadcastSub, broadcastTopic)
+
+		servidoresTopic, err := createAndJoinTopic(pb, "servidores")
+		errorHandler(err, "Erro ao criar tópico servidores: ", true)
+		servidoresSub, err := subscribeToTopic(servidoresTopic)
+		errorHandler(err, "Erro ao se inscrever no tópico servidores: ", true)
+		go listensSubs(ctx, servidoresSub, servidoresTopic)
+
+		fmt.Println("Aguardando conexão de um peer...")
+		//por padrao o endereço do superno de configuração inicial é o segundo elemento da lista de ips
+		ipHostIp, _, _ := net.SplitHostPort(listIp[1])
+		conn, err := net.Dial("tcp", ipHostIp+":8080")
+		defer conn.Close()
+		errorHandler(err, "Erro ao conectar ao servidor:", true)
+
+		fmt.Println("Conexão TCP estabelecida com sucesso")
+
+		chaveDeConexao := startPeer(h, handleStream)
+
+		tcpHandleConnection(conn, chaveDeConexao, nil, 0)
+		errorHandler(err, "Erro ao ler a chave de identificação:", true)
+	} else {
+		//nesse caso o servidor se conecta a rede em anel ja configurada
+
+		joinRing(h, *ipConect)
 	}
+
 	go receiveMessageAnelListening(ipHost)
-
-	pb, err := pubsub.NewGossipSub(context.Background(), h)
-	errorHandler(err, "Erro ao criar pubsub: ", true)
-
-	broadcastTopic, err := createAndJoinTopic(pb, "broadcast")
-	errorHandler(err, "Erro ao criar tópico broadcast: ", true)
-	broadcastSub, err := subscribeToTopic(broadcastTopic)
-	errorHandler(err, "Erro ao se inscrever no tópico broadcast: ", true)
-	go listensSubs(ctx, broadcastSub, broadcastTopic)
-
-	servidoresTopic, err := createAndJoinTopic(pb, "servidores")
-	errorHandler(err, "Erro ao criar tópico servidores: ", true)
-	servidoresSub, err := subscribeToTopic(servidoresTopic)
-	errorHandler(err, "Erro ao se inscrever no tópico servidores: ", true)
-	go listensSubs(ctx, servidoresSub, servidoresTopic)
-
-	fmt.Println("Aguardando conexão de um peer...")
-	//por padrao o endereço do superno de configuração inicial é o segundo elemento da lista de ips
-	ipHostIp, _, _ := net.SplitHostPort(listIp[1])
-	conn, err := net.Dial("tcp", ipHostIp+":8080")
-	defer conn.Close()
-	errorHandler(err, "Erro ao conectar ao servidor:", true)
-
-	fmt.Println("Conexão TCP estabelecida com sucesso")
-
-	chaveDeConexao := startPeer(h, handleStream)
-
-	tcpHandleConnection(conn, chaveDeConexao, nil, 0)
-	errorHandler(err, "Erro ao ler a chave de identificação:", true)
 
 	// Create a thread to read and write data.
 	//go writeData(rw)
