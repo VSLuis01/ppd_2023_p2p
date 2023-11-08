@@ -33,7 +33,7 @@ type Mensagem struct {
 	IpOrigem   string
 	IpDestino  string
 	Conteudo   []byte
-	IpHost     string
+	IpAtual    string
 	JumpsCount int
 }
 
@@ -50,7 +50,7 @@ func newMensagem(tipo string, IpOrigem string, IpDestino string, conteudo []byte
 }
 
 func (m *Mensagem) toString() string {
-	return fmt.Sprintf("%s#%s#%s#%s#%s#%d", m.Tipo, m.IpOrigem, m.IpDestino, m.Conteudo, m.IpHost, m.JumpsCount)
+	return fmt.Sprintf("%s#%s#%s#%s#%s#%d", m.Tipo, m.IpOrigem, m.IpDestino, m.Conteudo, m.IpAtual, m.JumpsCount)
 }
 
 func (m *Mensagem) toBytes() []byte {
@@ -88,7 +88,7 @@ func (m *Mensagem) sendNextNode() error {
 		connectNextNode(connNextNode)
 	}
 
-	mensagem := fmt.Sprintf("%s#%s#%s#%s#%s#%d", m.Tipo, m.IpOrigem, m.IpDestino, m.Conteudo, m.IpHost, 0)
+	mensagem := fmt.Sprintf("%s#%s#%s#%s#%s#%d", m.Tipo, m.IpOrigem, m.IpDestino, m.Conteudo, m.IpAtual, 0)
 
 	_, err := connNextNode.Write([]byte(mensagem))
 
@@ -100,7 +100,7 @@ func (m *Mensagem) sendPrevNode() error {
 		connectPrevNode(connPrevNode)
 	}
 
-	mensagem := fmt.Sprintf("%s#%s#%s#%s#%s#%d", m.Tipo, m.IpOrigem, m.IpDestino, m.Conteudo, m.IpHost, 0)
+	mensagem := fmt.Sprintf("%s#%s#%s#%s#%s#%d", m.Tipo, m.IpOrigem, m.IpDestino, m.Conteudo, m.IpAtual, 0)
 
 	_, err := connPrevNode.Write([]byte(mensagem))
 
@@ -142,50 +142,50 @@ func openFileAndGetIps(filename string) []string {
 	return ips
 }
 
-/*func receiveMessageAnelListening(adress string) {
-	tcpListener, err := net.Listen("tcp", adress)
+// Receber conexoes da rede em anel
+func receiveMessageAnelListening() {
+	tcpAddrIpHost, err := net.ResolveTCPAddr("tcp", ipHost)
+
+	tcpListener, err := net.ListenTCP("tcp", tcpAddrIpHost)
+
 	if err != nil {
-		errorHandler(err, "Erro ao ler mensagem TCP: ", false)
+		errorHandler(err, "Erro ao iniciar servidor TCP do anel: ", false)
 		return
 	}
+
 	for {
 		conn, err := tcpListener.Accept()
-		if err != nil {
-			errorHandler(err, "Erro ao ler mensagem TCP: ", false)
-			return
-		}
+		errorHandler(err, "Erro ao aceitar conexão TCP: ", false)
+
 		go func() { //leitura dos dados recebidos e tratamento deles
-			//ipTratamento, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
-			fmt.Println("Conexão TCP estabelecida com sucesso:", conn.RemoteAddr().String())
 			for {
-				buffer := make([]byte, 1024)
-				n, err := conn.Read(buffer)
-				//	decodedMessage, err := base64.StdEncoding.DecodeString(string(buffer[:n]))
-				recebimento := string(buffer[:n])
-				aux := strings.Split(recebimento, "#")
-				if len(aux) < 5 { //evita mensagens com formato invalido
-					continue
-				}
-				fmt.Println("Mensagem recebida: [", aux, "],[", recebimento, "]")
-				m := mensagem{IpOrigem: aux[1], IpDestino: aux[2], Conteudo: aux[3], IpAtual: aux[4]}
-				fmt.Println("mensagem criada")
-				tipo := aux[0]
-				if err != nil {
-					errorHandler(err, "Erro ao ler mensagem TCP: ", false)
-					return
-				}
+				buffer := make([]byte, 4000)
+
+				msgLen, err := conn.Read(buffer)
+				errorHandler(err, "Erro ao ler mensagem TCP: ", false)
+
+				mensagem := make([]byte, msgLen)
+				copy(mensagem, buffer[:msgLen]) // jeito mais seguro de copiar o buffer
+
+				msg := splitMensagem(string(mensagem))
+
 				//separa de quem veio a mensagem
-				if m.IpAtual == ipNextNode {
-					fmt.Println("Mensagem recebida do nó proximo: ", m.Conteudo, " tipo: ", tipo)
-					sendMessageNext(buffer[:n])
+				if msg.IpAtual == ipNextNode {
+
+					// aqui vai a logica de tratamento da mensagem (broadcast, etc)
+
+					fmt.Println("Mensagem recebida do nó seguinte: ", msg.toString())
 				} else {
-					fmt.Println("Mensagem recebida do nó anterior: ")
+
+					// aqui vai a logica de tratamento da mensagem (broadcast, etc)
+
+					fmt.Println("Mensagem recebida do nó anterior: ", msg.toString())
 				}
 
 			}
 		}()
 	}
-}*/
+}
 
 func getNextAndPrevAndHostManual(ipList []string, ipIndexFile int) (next string, prev string, host string) {
 	if ipIndexFile == 0 {
@@ -226,6 +226,7 @@ func getNextAndPrevAuto(ipList []string, host string) (string, string, string) {
 	return next, prev, host
 }
 
+// Conexões diretas com o nó servidor
 func tcpHandleMessages(conn net.Conn) {
 	defer func(conn net.Conn) {
 		err := conn.Close()
@@ -368,6 +369,9 @@ func main() {
 	privateKey = newHashSha1()
 
 	go tcpHandleMessages(conn)
+
+	// recebe mensagens do anel
+	go receiveMessageAnelListening()
 
 	// Wait forever
 	select {}
