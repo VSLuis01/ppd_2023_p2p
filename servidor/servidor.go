@@ -20,10 +20,10 @@ import (
 var tabelasDeRoteamento []string
 
 var ipNextNode string
-var connNextNode *net.TCPConn = nil
+var connNextNode net.Conn = nil
 
 var ipPrevNode string
-var connPrevNode *net.TCPConn = nil
+var connPrevNode net.Conn = nil
 
 var privateKey string
 
@@ -38,16 +38,20 @@ type Mensagem struct {
 	JumpsCount int
 }
 
-func splitMensagem(mensagem string) Mensagem {
+func splitMensagem(mensagem string) (*Mensagem, error) {
 	mensagemSplit := strings.Split(mensagem, "#")
 
-	jumps, _ := strconv.Atoi(mensagemSplit[5])
+	if len(mensagemSplit) == 6 {
+		jumps, _ := strconv.Atoi(mensagemSplit[5])
+		return &Mensagem{mensagemSplit[0], mensagemSplit[1], mensagemSplit[2], []byte(mensagemSplit[3]), mensagemSplit[4], jumps}, nil
+	} else {
+		return nil, fmt.Errorf("mensagem inválida")
+	}
 
-	return Mensagem{mensagemSplit[0], mensagemSplit[1], mensagemSplit[2], []byte(mensagemSplit[3]), mensagemSplit[4], jumps}
 }
 
-func newMensagem(tipo string, IpOrigem string, IpDestino string, conteudo []byte, IpHost string, jumpsCount int) Mensagem {
-	return Mensagem{tipo, IpOrigem, IpDestino, conteudo, IpHost, jumpsCount}
+func newMensagem(tipo string, IpOrigem string, IpDestino string, conteudo []byte, IpHost string, jumpsCount int) *Mensagem {
+	return &Mensagem{tipo, IpOrigem, IpDestino, conteudo, IpHost, jumpsCount}
 }
 
 func (m *Mensagem) toString() string {
@@ -58,56 +62,61 @@ func (m *Mensagem) toBytes() []byte {
 	return []byte(m.toString())
 }
 
-func connectNextNode(conn *net.TCPConn) {
-	tcpAddrHost, _ := net.ResolveTCPAddr("tcp", ipHost)
-	tcpAddrNextNode, _ := net.ResolveTCPAddr("tcp", ipNextNode)
-
-	conn, err := net.DialTCP("tcp", tcpAddrHost, tcpAddrNextNode)
+func connectNextNode() net.Conn {
+	conn, err := net.Dial("tcp", ipNextNode)
 	errorHandler(err, "Erro ao conectar com o próximo nó: ", false)
 
-	defer func(conn *net.TCPConn) {
-		err := conn.Close()
-		errorHandler(err, "Erro ao fechar conexão com o próximo nó: ", false)
-	}(conn)
+	return conn
 }
 
-func connectPrevNode(conn *net.TCPConn) {
-	tcpAddrHost, _ := net.ResolveTCPAddr("tcp", ipHost)
+func closeNextNode() {
+	if connNextNode != nil {
+		err := connNextNode.Close()
+		errorHandler(err, "Erro ao fechar conexão com o próximo nó: ", false)
+	}
+}
+
+func closePrevNode() {
+	if connPrevNode != nil {
+		err := connPrevNode.Close()
+		errorHandler(err, "Erro ao fechar conexão com o anterior nó: ", false)
+	}
+}
+
+func connectPrevNode() net.Conn {
 	tcpAddrPrevNode, _ := net.ResolveTCPAddr("tcp", ipPrevNode)
 
-	conn, err := net.DialTCP("tcp", tcpAddrHost, tcpAddrPrevNode)
+	conn, err := net.DialTCP("tcp", nil, tcpAddrPrevNode)
 	errorHandler(err, "Erro ao conectar com o anterior nó: ", false)
 
-	defer func(conn *net.TCPConn) {
-		err := conn.Close()
-		errorHandler(err, "Erro ao fechar conexão com o anterior nó: ", false)
-	}(conn)
+	return conn
 }
 
 func (m *Mensagem) sendNextNode() error {
 	if connNextNode == nil {
-		connectNextNode(connNextNode)
+		connNextNode = connectNextNode()
 	}
 
-	mensagem := fmt.Sprintf("%s#%s#%s#%s#%s#%d", m.Tipo, m.IpOrigem, m.IpDestino, m.Conteudo, m.IpAtual, 0)
+	m.IpAtual = ipHost
+	m.JumpsCount++
 
-	_, err := connNextNode.Write([]byte(mensagem))
+	_, err := connNextNode.Write(m.toBytes())
 
 	return err
 }
 
 func (m *Mensagem) sendPrevNode() error {
 	if connPrevNode == nil {
-		connectPrevNode(connPrevNode)
+		connPrevNode = connectPrevNode()
 	}
 
-	mensagem := fmt.Sprintf("%s#%s#%s#%s#%s#%d", m.Tipo, m.IpOrigem, m.IpDestino, m.Conteudo, m.IpAtual, 0)
+	m.IpAtual = ipHost
+	m.JumpsCount++
 
-	_, err := connPrevNode.Write([]byte(mensagem))
+	_, err := connPrevNode.Write(m.toBytes())
 
 	return err
 }
-
 func printIps() {
 	fmt.Println("ipNextNo: ", ipNextNode)
 	fmt.Println("ipPrevNo: ", ipPrevNode)
@@ -164,24 +173,54 @@ func receiveMessageAnelListening() {
 				buffer := make([]byte, 4000)
 
 				msgLen, err := conn.Read(buffer)
-				errorHandler(err, "Erro ao ler mensagem TCP: ", false)
+
+				if err == io.EOF {
+					fmt.Printf("[%s] A conexão foi fechada pelo nó.\n", conn.RemoteAddr().String())
+					return
+				}
 
 				mensagem := make([]byte, msgLen)
 				copy(mensagem, buffer[:msgLen]) // jeito mais seguro de copiar o buffer
 
-				msg := splitMensagem(string(mensagem))
+				msg, _ := splitMensagem(string(mensagem))
 
 				//separa de quem veio a mensagem
 				if msg.IpAtual == ipNextNode {
-
 					// aqui vai a logica de tratamento da mensagem (broadcast, etc)
 
-					fmt.Println("Mensagem recebida do nó seguinte: ", msg.toString())
+					if msg.IpDestino == ipHost { // usa a mensagem recebida
+						if msg.JumpsCount > 6 {
+							fmt.Println("Mensagem descartada por ter ultrapassado o limite de saltos")
+							continue
+						}
+					} else { // avalia o tipo e repassa a mensagem
+						switch msg.Tipo {
+						case "next": // repassa a mensagem
+							fmt.Println("Repassado a mensagem para o próximo nó")
+
+							msg.sendNextNode()
+						default:
+
+						}
+					}
+
 				} else {
-
 					// aqui vai a logica de tratamento da mensagem (broadcast, etc)
+					if msg.IpDestino == ipHost { // usa a mensagem recebida
+						if msg.JumpsCount > 6 {
+							fmt.Println("Mensagem descartada por ter ultrapassado o limite de saltos")
+							continue
+						}
+					} else { // avalia o tipo e repassa a mensagem
+						switch msg.Tipo {
+						case "next": // repassa a mensagem
+							fmt.Println("Repassado a mensagem para o próximo nó")
 
-					fmt.Println("Mensagem recebida do nó anterior: ", msg.toString())
+							msg.sendNextNode()
+						default:
+
+						}
+					}
 				}
 
 			}
@@ -249,7 +288,7 @@ func tcpHandleMessages(conn net.Conn) {
 	mensagem := make([]byte, msgLen)
 	copy(mensagem, buffer[:msgLen])
 
-	msg = splitMensagem(string(mensagem))
+	msg, _ = splitMensagem(string(mensagem))
 
 	fmt.Printf("[%s] Enviou: %s - Tipo > %s\n", conn.RemoteAddr().String(), string(msg.Conteudo), msg.Tipo)
 
@@ -267,7 +306,7 @@ func tcpHandleMessages(conn net.Conn) {
 		msgLen, err = conn.Read(buffer)
 
 		buffer = buffer[:msgLen]
-		msg = splitMensagem(string(buffer))
+		msg, _ = splitMensagem(string(buffer))
 
 		fmt.Println("Tabela de roteamento recebida do super nó: ")
 		err = json.Unmarshal(msg.Conteudo, &tabelasDeRoteamento)
@@ -347,7 +386,8 @@ func main() {
 		ipNextNode, ipPrevNode, ipHost = getNextAndPrevAndHostManual(listIp, *ipIndexFile)
 	}
 
-	//go receiveMessageAnelListening(ipHost)
+	// recebe mensagens do anel
+	go receiveMessageAnelListening()
 
 	fmt.Println("Se conectando a um super nó...")
 
@@ -370,9 +410,6 @@ func main() {
 	tcpHandleMessages(conn)
 
 	conn.Close()
-
-	// recebe mensagens do anel
-	go receiveMessageAnelListening()
 
 	// Wait forever
 	select {}
