@@ -83,13 +83,15 @@ func openFileAndGetIps() []string {
 }
 func receiveMessageAnelListening(adress string) {
 	tcpListener, err := net.Listen("tcp", adress)
-	defer tcpListener.Close()
 	if err != nil {
 		errorHandler(err, "Erro ao ler mensagem TCP: ", false)
 		return
 	}
+	defer tcpListener.Close()
+
 	for {
 		conn, err := tcpListener.Accept()
+		fmt.Println("sou a maquina ", ipHost)
 		if err != nil {
 			errorHandler(err, "Erro ao ler mensagem TCP: ", false)
 			return
@@ -123,11 +125,11 @@ func receiveMessageAnelListening(adress string) {
 				if m.IpDestino != ipHost {
 					if m.IpAtual == ipProximoNo {
 						fmt.Println("Mensagem recebida do nó proximo: ", m.Conteudo, " tipo: ", tipo)
-						sendMessageAnt(buffer[:n])
+						m.enviarMensagemAnt(tipo)
 					} else {
 						if m.IpAtual == ipNoAnterior {
 							fmt.Println("Mensagem recebida do nó anterior: ")
-							sendMessageNext(buffer[:n])
+							m.enviarMensagemNext(tipo)
 						}
 						continue
 					}
@@ -184,7 +186,7 @@ func sendMessageNext(mensagem []byte) {
 	errorHandler(err, "Erro ao conectar ao servidor:", true)
 
 	fmt.Println("Conexão TCP estabelecida com sucesso")
-	defer conn.Close()
+	//defer conn.Close()
 
 	_, err = conn.Write(mensagem)
 	errorHandler(err, "Erro ao enviar mensagem", true)
@@ -194,7 +196,7 @@ func sendMessageAnt(mensagem []byte) {
 	errorHandler(err, "Erro ao conectar ao servidor:", true)
 
 	fmt.Println("Conexão TCP estabelecida com sucesso")
-	defer conn.Close()
+	//defer conn.Close()
 
 	_, err = conn.Write(mensagem)
 	errorHandler(err, "Erro ao enviar mensagem", true)
@@ -348,39 +350,47 @@ func joinRing(host host.Host, ipSuper string) {
 	buffer := make([]byte, 1024)
 
 	conn, err := net.Dial("tcp", ipSuper)
+
 	conn.LocalAddr().String()
 	ipHost = conn.LocalAddr().String()
 	//utiliza o ip e porta da primeira conexão para a conexão em anel
 
 	defer conn.Close()
 	ipProximoNo = ipSuper
-	errorHandler(err, "Erro ao conectar ao servidor:", true)
-
+	if err != nil {
+		errorHandler(err, "Erro ao conectar ao servidor:", true)
+	}
 	//envia mensagem de solicitação de conexão
 	m := mensagem{IpOrigem: ipHost, IpDestino: ipSuper, Conteudo: host.ID().String(), IpAtual: ipHost}
 	//m.enviarMensagemNext("NovoServidor")
 	conn.Write(([]byte("NovoServidor" + "#" + m.IpOrigem + "#" + m.IpDestino + "#" + m.Conteudo + "#" + ipHost)))
-	conn.Read(buffer)
-	fmt.Println("Mensagem recebida, o ip do anterior é: ", string(buffer))
-
-	ipNoAnterior = string(buffer)
-	ipNoAnterior = strings.TrimSpace(ipNoAnterior)
-	fmt.Println("guardo anterior [", ipNoAnterior, "]")
-	//enviar  ack
+	n, _ := conn.Read(buffer)
+	fmt.Println("Mensagem recebida, do superno: ", string(buffer))
 	conn.Write([]byte("ACK"))
-	conn.Close()
+
+	ipNoAnterior = string(buffer[:n])
+
+	fmt.Printf("guardo anterior [%s]\n", ipNoAnterior)
+	//enviar  ack
+
+	ipNoAnterior = strings.TrimSpace(ipNoAnterior)
 	fmt.Println("passou do ack")
 	//enviar mensagem para o anterior atualizar o proximo ip
-	conn2, err := net.Dial("tcp", ipNoAnterior)
 
-	if err != nil {
-		fmt.Println("Erro ao conectar ao servidor:", err)
+	conn2, err1 := net.Dial("tcp", ipNoAnterior)
+
+	if err1 != nil {
+		fmt.Println("Erro ao conectar ao servidor:", err1)
+		errorHandler(err1, "Erro ao conectar ao servidor:", true)
 	}
-	errorHandler(err, "Erro ao conectar ao servidor:", true)
+
 	m = mensagem{IpOrigem: ipHost, IpDestino: ipNoAnterior, Conteudo: ipHost, IpAtual: ipHost}
 	conn2.Write(([]byte("AtualizaProximo" + "#" + m.IpOrigem + "#" + m.IpDestino + "#" + m.Conteudo + "#" + ipHost)))
-	conn2.Read(buffer)
+	n, err = conn2.Read(buffer)
 	if string(buffer) != "ACK" {
+		if err != nil {
+			fmt.Println(err.Error())
+		}
 		fmt.Println("Erro ao atualizar anterior")
 	} else {
 		fmt.Println("anterior atualizado com sucesso")
@@ -400,7 +410,7 @@ func main() {
 	fmt.Println(listIp)
 
 	///baseado no arquivo, encontra o ipAtual e define proximo e anterior
-	ipHost := h.Addrs()[0].String()
+	ipHost = h.Addrs()[0].String()
 	if *ipConect == "" { //nesse caso o servidor é da configuração inicial
 		if *ipFile == -1 {
 			for indice, valor := range listIp { //busca o ip da maquina na lista de ips
@@ -422,7 +432,7 @@ func main() {
 			}
 		} else {
 			indice := *ipFile
-			fmt.Println("Indice: ", indice)
+			fmt.Println("Indice: ", indice, " ip: ", listIp[indice])
 			if indice == 0 {
 				ipNoAnterior = listIp[len(listIp)-1]
 				ipProximoNo = listIp[indice+1]

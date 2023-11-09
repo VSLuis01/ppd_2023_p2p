@@ -411,6 +411,7 @@ func receiveMessageAnelListening(adress string) {
 				fmt.Println("Mensagem recebida: [", aux, "],[", recebimento, "]")
 				m := mensagem{IpOrigem: aux[1], IpDestino: aux[2], Conteudo: aux[3], IpAtual: aux[4]}
 				fmt.Println("mensagem criada")
+				fmt.Println("mensagem destino: ", m.IpDestino, " ipHost: ", ipHost)
 				tipo := aux[0]
 				if err != nil {
 					errorHandler(err, "Erro ao ler mensagem TCP: ", false)
@@ -422,11 +423,12 @@ func receiveMessageAnelListening(adress string) {
 				if m.IpDestino != ipHost {
 					if m.IpAtual == ipProximoNo {
 						fmt.Println("Mensagem recebida do nó proximo: ", m.Conteudo, " tipo: ", tipo)
-						sendMessageAnt(buffer[:n])
+						m.enviarMensagemAnt(tipo)
 					} else {
 						if m.IpAtual == ipNoAnterior {
 							fmt.Println("Mensagem recebida do nó anterior: ")
-							sendMessageNext(buffer[:n])
+							m.enviarMensagemNext(tipo)
+
 						}
 						continue
 					}
@@ -436,7 +438,7 @@ func receiveMessageAnelListening(adress string) {
 					//TODO: tratar mensagem de novo servidor
 
 					//TODO: ATUALIZAR ip anterior
-					fmt.Println("Mensagem recebida de um nó desconhecido: ")
+					fmt.Println("Mensagem recebida de um nó desconhecido ou para esse dispositivo ")
 					switch tipo {
 					case "NovoServidor":
 						//myp := peer.AddrInfo{ID: peer.ID(m.Conteudo), Addrs: []multiaddr.Multiaddr{multiaddr.StringCast(conn.RemoteAddr().String())}}
@@ -458,22 +460,23 @@ func receiveMessageAnelListening(adress string) {
 						mutexTabelasDeServ.Unlock()
 						fmt.Println("Novo servidor registrado: ", m.Conteudo, " ; ", conn.RemoteAddr().String())
 						conn.Write([]byte(ipNoAnterior))
-						conn.Read(buffer)
+						n, _ = conn.Read(buffer)
 						//verificar ack
 						if string(buffer[:n]) == "ACK" {
 							fmt.Println("ACK recebido")
+							time.Sleep(1 * time.Second)
 							ipNoAnterior = conn.RemoteAddr().String()
 							byteTabela, _ := json.Marshal(tabelasDeRoteamentoServidores)
 							for _, p := range tabelasDeRoteamentoServidores {
 								fmt.Println("Enviando tabela para: ", p.IPHost)
 								mensagemEnvio := mensagem{IpOrigem: ipHost, IpDestino: p.IPHost, Conteudo: string(byteTabela), IpAtual: ipHost}
-								mensagemEnvio.enviarMensagemNext("AtualizarListaServer")
+								go mensagemEnvio.enviarMensagemNext("AtualizarListaServer")
 
 							}
 							for _, p := range tabelasDeRoteamento {
 								fmt.Println("Enviando tabela para: ", p.IPHost)
 								mensagemEnvio := mensagem{IpOrigem: ipHost, IpDestino: p.IPHost, Conteudo: string(byteTabela), IpAtual: ipHost}
-								mensagemEnvio.enviarMensagemNext("AtualizarListaServer")
+								go mensagemEnvio.enviarMensagemNext("AtualizarListaServer")
 							}
 
 							//mensagemEnvio := mensagem{IpOrigem: ipHost, IpDestino: ipHost, Conteudo: string(byteTabela), IpAtual: ipHost}
@@ -505,9 +508,12 @@ func receiveMessageAnelListening(adress string) {
 						}
 						tabelasDeRoteamentoServidores = append(tabelasDeRoteamentoServidores, tabelaAux2...)
 						mutexTabelasDeServ.Unlock()
+
+						fmt.Println("Tabela de servidores atualizada: ", tabelasDeRoteamentoServidores)
 					case "AtualizaProximo":
 						ipProximoNo = m.Conteudo
 						conn.Write([]byte("ACK"))
+						fmt.Println("atualizou o proximo")
 					default:
 
 						fmt.Println("mensagem invalida")
@@ -525,9 +531,12 @@ func sendMessageNext(mensagem []byte) {
 	errorHandler(err, "Erro ao conectar ao servidor:", true)
 
 	fmt.Println("Conexão TCP estabelecida com sucesso")
-	defer conn.Close()
+	//defer conn.Close()
 
 	_, err = conn.Write([]byte(mensagem))
+	fmt.Println("Mesagem enviada")
+	time.Sleep(1 * time.Second)
+	fmt.Println("fechar")
 	errorHandler(err, "Erro ao enviar mensagem", true)
 }
 func sendMessageAnt(mensagem []byte) {
@@ -535,7 +544,7 @@ func sendMessageAnt(mensagem []byte) {
 	errorHandler(err, "Erro ao conectar ao servidor:", true)
 
 	fmt.Println("Conexão TCP estabelecida com sucesso")
-	defer conn.Close()
+	//defer conn.Close()
 	fmt.Println("Mensagem enviada para o nó anterior: [", string(mensagem), "]")
 
 	_, err = conn.Write([]byte(mensagem))

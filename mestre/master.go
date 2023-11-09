@@ -235,17 +235,18 @@ func receiveMessageAnelListening(adress string) {
 					errorHandler(err, "Erro ao ler mensagem TCP: ", false)
 					return
 				}
+				fmt.Println("mensagem destino: ", m.IpDestino, " ipHost: ", ipHost)
 				if m.IpOrigem == ipHost {
 					continue
 				}
 				if m.IpDestino != ipHost {
 					if m.IpAtual == ipProximoNo {
 						fmt.Println("Mensagem recebida do nó proximo: ", m.Conteudo, " tipo: ", tipo)
-						sendMessageAnt(buffer[:n])
+						m.enviarMensagemAnt(tipo)
 					} else {
 						if m.IpAtual == ipNoAnterior {
 							fmt.Println("Mensagem recebida do nó anterior: ")
-							sendMessageNext(buffer[:n])
+							m.enviarMensagemNext(tipo)
 						}
 						continue
 					}
@@ -312,9 +313,11 @@ func receiveMessageAnelListening(adress string) {
 						}
 						tabelasDeRoteamentoServidores = append(tabelasDeRoteamentoServidores, tabelaAux2...)
 						mutexTabelasDeServ.Unlock()
+						fmt.Println("Tabela de servidores atualizada: ", tabelasDeRoteamentoServidores)
 					case "AtualizaProximo":
 						ipProximoNo = m.Conteudo
 						conn.Write([]byte("ACK"))
+						fmt.Println("Proximo atualizado: ", ipProximoNo)
 					default:
 
 						fmt.Println("mensagem invalida")
@@ -332,7 +335,7 @@ func sendMessageNext(mensagem []byte) {
 	errorHandler(err, "Erro ao conectar ao servidor:", true)
 
 	fmt.Println("Conexão TCP estabelecida com sucesso")
-	defer conn.Close()
+	//	defer conn.Close()
 
 	_, err = conn.Write(mensagem)
 	errorHandler(err, "Erro ao enviar mensagem", true)
@@ -342,7 +345,7 @@ func sendMessageAnt(mensagem []byte) {
 	errorHandler(err, "Erro ao conectar ao servidor:", true)
 
 	fmt.Println("Conexão TCP estabelecida com sucesso")
-	defer conn.Close()
+	//	defer conn.Close()
 
 	_, err = conn.Write(mensagem)
 	errorHandler(err, "Erro ao enviar mensagem", true)
@@ -362,7 +365,7 @@ func main() {
 	fmt.Println(listIp)
 
 	///baseado no arquivo, encontra o ipatual e define proximo e anterior
-	ipHost := h.Addrs()[0].String()
+	ipHost = h.Addrs()[0].String()
 	if *ipFile == -1 {
 		for indice, valor := range listIp { //busca o ip da maquina na lista de ips
 			ipAtual, _, _ := net.SplitHostPort(valor)
