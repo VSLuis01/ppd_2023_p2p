@@ -21,9 +21,12 @@ var tabelaRoteamentoSuperNos []string
 
 var ipNextNode string
 var connNextNode net.Conn = nil
+
 var ipPrevNode string
 var connPrevNode net.Conn = nil
+
 var ipHost string
+
 var privateKey string
 
 type Mensagem struct {
@@ -59,16 +62,6 @@ func (m *Mensagem) toBytes() []byte {
 	return []byte(m.toString())
 }
 
-func connectNextNode() net.Conn {
-	//tcpAddrHost, _ := net.ResolveTCPAddr("tcp", ipHost)
-	//tcpAddrNextNode, _ := net.ResolveTCPAddr("tcp", ipNextNode)
-
-	conn, err := net.Dial("tcp", ipNextNode)
-	errorHandler(err, "Erro ao conectar com o próximo nó: ", false)
-
-	return conn
-}
-
 func closeNextNode() {
 	if connNextNode != nil {
 		err := connNextNode.Close()
@@ -83,11 +76,15 @@ func closePrevNode() {
 	}
 }
 
-func connectPrevNode() net.Conn {
-	//tcpAddrHost, _ := net.ResolveTCPAddr("tcp", ipHost)
-	tcpAddrPrevNode, _ := net.ResolveTCPAddr("tcp", ipPrevNode)
+func connectNextNode() net.Conn {
+	conn, err := net.Dial("tcp", ipNextNode)
+	errorHandler(err, "Erro ao conectar com o próximo nó: ", false)
 
-	conn, err := net.DialTCP("tcp", nil, tcpAddrPrevNode)
+	return conn
+}
+
+func connectPrevNode() net.Conn {
+	conn, err := net.Dial("tcp", ipPrevNode)
 	errorHandler(err, "Erro ao conectar com o anterior nó: ", false)
 
 	return conn
@@ -224,6 +221,7 @@ func receiveMessageAnelListening() {
 		}
 
 		go func() { //leitura dos dados recebidos e tratamento deles
+			defer conn.Close()
 			for {
 				buffer := make([]byte, 4000)
 
@@ -266,7 +264,7 @@ func receiveMessageAnelListening() {
 						}
 					}
 
-				} else {
+				} else if msg.IpAtual == ipPrevNode {
 					// aqui vai a logica de tratamento da mensagem (broadcast, etc)
 					if msg.IpDestino == ipHost { // usa a mensagem recebida
 						if msg.JumpsCount > 6 {
@@ -286,6 +284,11 @@ func receiveMessageAnelListening() {
 
 						}
 					}
+				} else {
+					// tunnel connection. Aqui é onde algum nó faz uma conexão direta com o mestre
+
+					// apos fazer o que tem q ser feito. Fechara conexão
+					break
 				}
 
 			}
@@ -380,8 +383,6 @@ func init() {
 }
 
 func main() {
-	//ctx := context.Background()
-
 	// definindo a porta do nó mestre
 	ipIndexFile := flag.Int("fi", -1, "Indice o arquivo de ips")
 	flag.Parse()
@@ -404,21 +405,13 @@ func main() {
 	// Após a configuração inicial. Começa a receber as mensagens do anel
 	go receiveMessageAnelListening()
 
-	//inicia recepçao de mensagens do anel
-	/*go receiveMessageAnelListening(ipHost) */
-
 	ipHostInitialConfig, _, _ := net.SplitHostPort(ipHost)
-	tcpAddrIpHost, err := net.ResolveTCPAddr("tcp", ipHostInitialConfig+":8080")
-	errorHandler(err, "Erro ao resolver endereço TCP: ", true)
 
 	// servidor tcp
-	tcpListener, err := net.ListenTCP("tcp", tcpAddrIpHost)
+	tcpListener, err := net.Listen("tcp", ipHostInitialConfig+":8080")
 	errorHandler(err, "Erro ao criar servidor TCP: ", true)
 
-	defer func(tcpListener net.Listener) {
-		err := tcpListener.Close()
-		errorHandler(err, "Erro ao fechar servidor TCP: ", true)
-	}(tcpListener)
+	defer tcpListener.Close()
 
 	// cria uma chave única SHA1
 	privateKey = newHashSha1()
@@ -428,6 +421,8 @@ func main() {
 
 	// canais criados para controlar a conexão dos supernós
 	ackChan := make(chan bool, 2)
+
+	// canal para sinalizar que toda a rede está pronta
 	finishChan := make(chan bool, 1)
 
 	var conns []net.Conn
@@ -454,6 +449,7 @@ func main() {
 		// envia confirmacao aos supernós
 		for _, conn := range conns {
 
+			// registros finalizados
 			msg := newMensagem("ok", ipHost, conn.RemoteAddr().String(), []byte("ok"), ipHost, 0)
 
 			_, err = conn.Write(msg.toBytes())

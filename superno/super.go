@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"context"
 	"crypto/sha1"
 	"encoding/json"
 	"flag"
@@ -66,13 +65,6 @@ func (m *Mensagem) toBytes() []byte {
 	return []byte(m.toString())
 }
 
-func connectNextNode() net.Conn {
-	conn, err := net.Dial("tcp", ipNextNode)
-	errorHandler(err, "Erro ao conectar com o próximo nó: ", false)
-
-	return conn
-}
-
 func closeNextNode() {
 	if connNextNode != nil {
 		err := connNextNode.Close()
@@ -87,10 +79,15 @@ func closePrevNode() {
 	}
 }
 
-func connectPrevNode() net.Conn {
-	tcpAddrPrevNode, _ := net.ResolveTCPAddr("tcp", ipPrevNode)
+func connectNextNode() net.Conn {
+	conn, err := net.Dial("tcp", ipNextNode)
+	errorHandler(err, "Erro ao conectar com o próximo nó: ", false)
 
-	conn, err := net.DialTCP("tcp", nil, tcpAddrPrevNode)
+	return conn
+}
+
+func connectPrevNode() net.Conn {
+	conn, err := net.Dial("tcp", ipPrevNode)
 	errorHandler(err, "Erro ao conectar com o anterior nó: ", false)
 
 	return conn
@@ -298,15 +295,11 @@ func init() {
 }
 
 func main() {
-	_, cancel := context.WithCancel(context.Background())
-
-	defer cancel()
-
 	ipIndexFile := flag.Int("fi", -1, "Indice o arquivo de ips")
+
+	// porta utilizada para os servidores se conectarem
 	portForServers := flag.String("p", "8001", "Porta destino")
 	flag.Parse()
-
-	//buffer := make([]byte, 1024)
 
 	listIp := openFileAndGetIps("../ips")
 
@@ -328,25 +321,20 @@ func main() {
 	// recebe mensagens do anel
 	go receiveMessageAnelListening()
 
+	// canal para sinalizar quando o mestre terminar de configurar a rede
 	finishMestreChan := make(chan bool, 1)
+
+	// canal para sinalizar quando os servidores terminarem de se conectar
 	finishServersChan := make(chan bool, 1)
 
-	//se conecta com o mestre
-
 	ipMestre := listIp[0]
-
-	// conecta ao mestre
 
 	ipMestreInitialConfig, _, _ := net.SplitHostPort(ipMestre)
 
 	ipMestreInitialConfig = ipMestreInitialConfig + ":8080"
 
-	tcpAddrMestreInitialConfig, _ := net.ResolveTCPAddr("tcp", ipMestreInitialConfig)
-	//tcpAddrHost, _ := net.ResolveTCPAddr("tcp", ipHost)
-
-	// utiliza esse dial para gravar certo o Ip + Porta dos super nos. Para ficar de acordo com do arquivo
-	// o Dial normal gera uma porta aleatoria
-	mestreConn, err := net.DialTCP("tcp", nil, tcpAddrMestreInitialConfig)
+	// conecta com o mestre
+	mestreConn, err := net.Dial("tcp", ipMestreInitialConfig)
 
 	defer mestreConn.Close()
 
@@ -361,16 +349,20 @@ func main() {
 	}
 
 	if <-finishServersChan {
+		// apos os servidores terminarem de se conectar, envia ao mestre que a rede está pronta
 		msg := newMensagem("ok", ipHost, mestreConn.RemoteAddr().String(), []byte("ok"), ipHost, 0)
 
 		mestreConn.Write(msg.toBytes())
+
+		// não precisa mais se conectar diretamento com o mestre. Mensagens via anel agora
+		mestreConn.Close()
 	}
 
 	// Wait forever
 	select {}
 }
 
-func configNoMestre(mestreConn *net.TCPConn, finish chan<- bool) {
+func configNoMestre(mestreConn net.Conn, finish chan<- bool) {
 
 	chaveMestre := make([]byte, 1024)
 
@@ -388,6 +380,7 @@ func configNoMestre(mestreConn *net.TCPConn, finish chan<- bool) {
 
 	fmt.Println("Enviando ACK para o nó mestre...")
 
+	// envia um ACK com o IpHost real para a tabela de roteamento
 	msg = newMensagem("ack", ipHost, mestreConn.RemoteAddr().String(), []byte(ipHost), ipHost, 0)
 
 	_, err = mestreConn.Write(msg.toBytes())
@@ -405,7 +398,8 @@ func configNoMestre(mestreConn *net.TCPConn, finish chan<- bool) {
 
 	msg, _ = splitMensagem(string(confirmacao))
 
-	if string(msg.Conteudo) == "ok" {
+	// registros dos super nós finalizados
+	if msg.Tipo == "ok" {
 		// solicitando tabela de roteamento
 		fmt.Println("Solicitando tabela de roteamento ao mestre...")
 
@@ -434,16 +428,13 @@ func configNoMestre(mestreConn *net.TCPConn, finish chan<- bool) {
 		}
 
 		finish <- true
+	} else {
+		finish <- false
 	}
-
-	finish <- false
 }
 
 func handleServers(ip string, portForServers string, finishServersChan chan<- bool) {
 	ackChan := make(chan bool, 2)
-
-	//tcpAddrIpHost, err := net.ResolveTCPAddr("tcp", ip)
-	//errorHandler(err, "Erro ao resolver endereço TCP: ", true)
 
 	ip, _, _ = net.SplitHostPort(ip)
 
@@ -507,6 +498,7 @@ func receiveMessageAnelListening() {
 		}
 
 		go func() { //leitura dos dados recebidos e tratamento deles
+			defer conn.Close()
 			for {
 				buffer := make([]byte, 4000)
 
@@ -545,7 +537,7 @@ func receiveMessageAnelListening() {
 
 						}
 					}
-				} else {
+				} else if msg.IpAtual == ipPrevNode {
 					// aqui vai a logica de tratamento da mensagem (broadcast, etc)
 					if msg.IpDestino == ipHost { // usa a mensagem recebida
 						if msg.JumpsCount > 6 {
@@ -562,6 +554,11 @@ func receiveMessageAnelListening() {
 
 						}
 					}
+				} else {
+					// tunnel connection. Aqui é onde algum nó faz uma conexão direta com o supernó
+
+					// apos fazer o que tem q ser feito. Fechara conexão
+					break
 				}
 
 			}

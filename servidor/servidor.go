@@ -62,13 +62,6 @@ func (m *Mensagem) toBytes() []byte {
 	return []byte(m.toString())
 }
 
-func connectNextNode() net.Conn {
-	conn, err := net.Dial("tcp", ipNextNode)
-	errorHandler(err, "Erro ao conectar com o próximo nó: ", false)
-
-	return conn
-}
-
 func closeNextNode() {
 	if connNextNode != nil {
 		err := connNextNode.Close()
@@ -83,10 +76,15 @@ func closePrevNode() {
 	}
 }
 
-func connectPrevNode() net.Conn {
-	tcpAddrPrevNode, _ := net.ResolveTCPAddr("tcp", ipPrevNode)
+func connectNextNode() net.Conn {
+	conn, err := net.Dial("tcp", ipNextNode)
+	errorHandler(err, "Erro ao conectar com o próximo nó: ", false)
 
-	conn, err := net.DialTCP("tcp", nil, tcpAddrPrevNode)
+	return conn
+}
+
+func connectPrevNode() net.Conn {
+	conn, err := net.Dial("tcp", ipPrevNode)
 	errorHandler(err, "Erro ao conectar com o anterior nó: ", false)
 
 	return conn
@@ -169,6 +167,7 @@ func receiveMessageAnelListening() {
 		errorHandler(err, "Erro ao aceitar conexão TCP: ", false)
 
 		go func() { //leitura dos dados recebidos e tratamento deles
+			defer conn.Close()
 			for {
 				buffer := make([]byte, 4000)
 
@@ -204,7 +203,7 @@ func receiveMessageAnelListening() {
 						}
 					}
 
-				} else {
+				} else if msg.IpAtual == ipPrevNode {
 					// aqui vai a logica de tratamento da mensagem (broadcast, etc)
 					if msg.IpDestino == ipHost { // usa a mensagem recebida
 						if msg.JumpsCount > 6 {
@@ -221,6 +220,11 @@ func receiveMessageAnelListening() {
 
 						}
 					}
+				} else {
+					// tunnel connection. Aqui é onde algum nó faz uma conexão direta com o servidor
+
+					// apos fazer o que tem q ser feito. Fechara conexão
+					break
 				}
 
 			}
@@ -265,57 +269,6 @@ func getNextAndPrevAuto(ipList []string, host string) (string, string, string) {
 		}
 	}
 	return next, prev, host
-}
-
-// Conexões diretas com o nó servidor
-func tcpHandleMessages(conn net.Conn) {
-	msg := newMensagem("chave", ipHost, conn.RemoteAddr().String(), []byte(privateKey+"/"+ipHost), ipHost, 0)
-
-	_, err := conn.Write(msg.toBytes())
-	errorHandler(err, "Erro ao enviar chave para o super nó: ", false)
-	fmt.Println("Chave enviada para o super nó")
-
-	buffer := make([]byte, 4000)
-	msgLen, err := conn.Read(buffer)
-
-	if err == io.EOF {
-		fmt.Printf("[%s] A conexão foi fechada pelo nó.\n", conn.RemoteAddr().String())
-		return
-	}
-
-	errorHandler(err, "Erro ao ler mensagem TCP: ", false)
-
-	mensagem := make([]byte, msgLen)
-	copy(mensagem, buffer[:msgLen])
-
-	msg, _ = splitMensagem(string(mensagem))
-
-	fmt.Printf("[%s] Enviou: %s - Tipo > %s\n", conn.RemoteAddr().String(), string(msg.Conteudo), msg.Tipo)
-
-	if strings.EqualFold(msg.Tipo, "ack") {
-		fmt.Println("Chave recebida pelo super nó")
-
-		// Solicita a tabela dos super nós
-		msg = newMensagem("roteamento-supers", ipHost, conn.RemoteAddr().String(), []byte(""), ipHost, 0)
-
-		_, err = conn.Write(msg.toBytes())
-		errorHandler(err, "Erro ao solicitar tabela de roteamento dos super nós: ", false)
-
-		// Recebe a tabela de roteamento dos super nós
-		buffer = make([]byte, 1024)
-		msgLen, err = conn.Read(buffer)
-
-		buffer = buffer[:msgLen]
-		msg, _ = splitMensagem(string(buffer))
-
-		fmt.Println("Tabela de roteamento recebida do super nó: ")
-		err = json.Unmarshal(msg.Conteudo, &tabelasDeRoteamento)
-		errorHandler(err, "Erro ao converter tabela de roteamento:", true)
-
-		for _, supers := range tabelasDeRoteamento {
-			fmt.Println(supers)
-		}
-	}
 }
 
 var characterRunes = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
@@ -396,21 +349,69 @@ func main() {
 
 	ipSuperNo = ipSuperNo + ":" + *portaSuperNo
 
-	tcpAddrSuperNo, _ := net.ResolveTCPAddr("tcp", ipSuperNo)
-	//tcpAddrIpHost, _ := net.ResolveTCPAddr("tcp", ipHost)
-
-	conn, err := net.DialTCP("tcp", nil, tcpAddrSuperNo)
-	defer conn.Close()
+	conn, err := net.Dial("tcp", ipSuperNo)
 	errorHandler(err, "Erro ao conectar ao super nó:", true)
 
 	fmt.Println("Conexão TCP estabelecida com sucesso")
 
 	privateKey = newHashSha1()
 
-	tcpHandleMessages(conn)
-
-	conn.Close()
+	// configuração inicial com o supernó
+	tcpConfigSuperNo(conn)
 
 	// Wait forever
 	select {}
+}
+
+// Conexões diretas com o nó servidor
+func tcpConfigSuperNo(conn net.Conn) {
+	defer conn.Close()
+
+	msg := newMensagem("chave", ipHost, conn.RemoteAddr().String(), []byte(privateKey+"/"+ipHost), ipHost, 0)
+
+	_, err := conn.Write(msg.toBytes())
+	errorHandler(err, "Erro ao enviar chave para o super nó: ", false)
+	fmt.Println("Chave enviada para o super nó")
+
+	buffer := make([]byte, 4000)
+	msgLen, err := conn.Read(buffer)
+
+	if err == io.EOF {
+		fmt.Printf("[%s] A conexão foi fechada pelo nó.\n", conn.RemoteAddr().String())
+		return
+	}
+
+	errorHandler(err, "Erro ao ler mensagem TCP: ", false)
+
+	mensagem := make([]byte, msgLen)
+	copy(mensagem, buffer[:msgLen])
+
+	msg, _ = splitMensagem(string(mensagem))
+
+	fmt.Printf("[%s] Enviou: %s - Tipo > %s\n", conn.RemoteAddr().String(), string(msg.Conteudo), msg.Tipo)
+
+	if strings.EqualFold(msg.Tipo, "ack") {
+		fmt.Println("Chave recebida pelo super nó")
+
+		// Solicita a tabela dos super nós
+		msg = newMensagem("roteamento-supers", ipHost, conn.RemoteAddr().String(), []byte(""), ipHost, 0)
+
+		_, err = conn.Write(msg.toBytes())
+		errorHandler(err, "Erro ao solicitar tabela de roteamento dos super nós: ", false)
+
+		// Recebe a tabela de roteamento dos super nós
+		buffer = make([]byte, 1024)
+		msgLen, err = conn.Read(buffer)
+
+		buffer = buffer[:msgLen]
+		msg, _ = splitMensagem(string(buffer))
+
+		fmt.Println("Tabela de roteamento recebida do super nó: ")
+		err = json.Unmarshal(msg.Conteudo, &tabelasDeRoteamento)
+		errorHandler(err, "Erro ao converter tabela de roteamento:", true)
+
+		for _, supers := range tabelasDeRoteamento {
+			fmt.Println(supers)
+		}
+	}
 }
