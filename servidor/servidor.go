@@ -14,10 +14,20 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
-var tabelasDeRoteamento []string
+type HostAnel struct {
+	IDHost string
+	IPHost string
+}
+
+var tabelasDeRoteamentoSupers []HostAnel
+var tabelasDeRoteamentoServidores []HostAnel
+
+var mutexTabelasDeSupers = sync.Mutex{}
+var mutexTabelasDeServ = sync.Mutex{}
 
 var ipNextNode string
 var connNextNode net.Conn = nil
@@ -52,6 +62,10 @@ func splitMensagem(mensagem string) (*Mensagem, error) {
 
 func newMensagem(tipo string, IpOrigem string, IpDestino string, conteudo []byte, IpHost string, jumpsCount int) *Mensagem {
 	return &Mensagem{tipo, IpOrigem, IpDestino, conteudo, IpHost, jumpsCount}
+}
+
+func newAck(ipDestino string) *Mensagem {
+	return &Mensagem{"ack", ipHost, ipDestino, []byte(""), ipHost, 0}
 }
 
 func (m *Mensagem) toString() string {
@@ -152,9 +166,7 @@ func openFileAndGetIps(filename string) []string {
 
 // Receber conexoes da rede em anel
 func receiveMessageAnelListening() {
-	tcpAddrIpHost, err := net.ResolveTCPAddr("tcp", ipHost)
-
-	tcpListener, err := net.ListenTCP("tcp", tcpAddrIpHost)
+	tcpListener, err := net.Listen("tcp", ipHost)
 
 	if err != nil {
 		errorHandler(err, "Erro ao iniciar servidor TCP do anel: ", false)
@@ -183,50 +195,52 @@ func receiveMessageAnelListening() {
 
 				msg, _ := splitMensagem(string(mensagem))
 
-				//separa de quem veio a mensagem
-				if msg.IpAtual == ipNextNode {
-					// aqui vai a logica de tratamento da mensagem (broadcast, etc)
-
-					if msg.IpDestino == ipHost { // usa a mensagem recebida
-						if msg.JumpsCount > 6 {
-							fmt.Println("Mensagem descartada por ter ultrapassado o limite de saltos")
-							continue
-						}
-					} else { // avalia o tipo e repassa a mensagem
-						switch msg.Tipo {
-						case "next": // repassa a mensagem
-							fmt.Println("Repassado a mensagem para o próximo nó")
-
-							msg.sendNextNode()
-						default:
-
-						}
-					}
-
-				} else if msg.IpAtual == ipPrevNode {
-					// aqui vai a logica de tratamento da mensagem (broadcast, etc)
-					if msg.IpDestino == ipHost { // usa a mensagem recebida
-						if msg.JumpsCount > 6 {
-							fmt.Println("Mensagem descartada por ter ultrapassado o limite de saltos")
-							continue
-						}
-					} else { // avalia o tipo e repassa a mensagem
-						switch msg.Tipo {
-						case "next": // repassa a mensagem
-							fmt.Println("Repassado a mensagem para o próximo nó")
-
-							msg.sendNextNode()
-						default:
-
-						}
-					}
-				} else {
-					// tunnel connection. Aqui é onde algum nó faz uma conexão direta com o servidor
-
-					// apos fazer o que tem q ser feito. Fechara conexão
-					break
+				if msg.IpOrigem == ipHost {
+					continue
 				}
 
+				if msg.IpDestino != ipHost {
+					if msg.IpAtual == ipNextNode {
+						msg.sendPrevNode()
+					} else if msg.IpAtual == ipPrevNode {
+						msg.sendNextNode()
+					} else {
+						// tunel
+					}
+				} else {
+					switch msg.Tipo {
+					case "AtualizaProximo":
+						ipNextNode = string(msg.Conteudo)
+
+						conn.Write(newAck(conn.RemoteAddr().String()).toBytes())
+					case "AtualizarListaServer":
+
+						var tabelaAnelAux []HostAnel
+						var tabelaAnelAux2 []HostAnel
+						err := json.Unmarshal(msg.Conteudo, &tabelaAnelAux)
+						errorHandler(err, "Erro ao desconverter roteamento:", false)
+
+						mutexTabelasDeServ.Lock()
+						for _, p := range tabelaAnelAux { //laço para evitar itens duplicados
+							existe := false
+							for _, p2 := range tabelasDeRoteamentoServidores {
+
+								if p.IDHost == p2.IDHost {
+									existe = true
+
+								}
+
+							}
+							if !existe {
+								tabelaAnelAux2 = append(tabelaAnelAux2, p)
+							}
+						}
+						tabelasDeRoteamentoServidores = append(tabelasDeRoteamentoServidores, tabelaAnelAux2...)
+						mutexTabelasDeServ.Unlock()
+					default:
+						fmt.Println("mensagem invalida")
+					}
+				}
 			}
 		}()
 	}
@@ -323,6 +337,7 @@ func main() {
 
 	ipIndexFile := flag.Int("fi", -1, "Indice o arquivo de ips")
 	portaSuperNo := flag.String("ps", "8001", "Porta do super nó")
+	ipConect := flag.String("c", "", "<ip>:<porta> de um superno. ")
 	flag.Parse()
 
 	listIp := openFileAndGetIps("../ips")
@@ -332,35 +347,106 @@ func main() {
 	ipHost, err = getIpHost()
 	errorHandler(err, "Erro ao obter endereço IP da máquina: ", true)
 
-	if *ipIndexFile == -1 {
-		ipNextNode, ipPrevNode, ipHost = getNextAndPrevAuto(listIp, ipHost)
+	if *ipConect == "" { //nesse caso o servidor é da configuração inicial
+		if *ipIndexFile == -1 {
+			ipNextNode, ipPrevNode, ipHost = getNextAndPrevAuto(listIp, ipHost)
+		} else {
+			// atribui a porta
+			ipNextNode, ipPrevNode, ipHost = getNextAndPrevAndHostManual(listIp, *ipIndexFile)
+		}
+
+		// recebe mensagens do anel
+		go receiveMessageAnelListening()
+
+		fmt.Println("Se conectando a um super nó...")
+
+		//por padrao o endereço do superno de configuração inicial é o segundo elemento da lista de ips
+		ipSuperNo, _, _ := net.SplitHostPort(listIp[1])
+
+		ipSuperNo = ipSuperNo + ":" + *portaSuperNo
+
+		conn, err := net.Dial("tcp", ipSuperNo)
+		errorHandler(err, "Erro ao conectar ao super nó:", true)
+
+		fmt.Println("Conexão TCP estabelecida com sucesso")
+
+		privateKey = newHashSha1()
+
+		// configuração inicial com o supernó
+		tcpConfigSuperNo(conn)
 	} else {
-		// atribui a porta
-		ipNextNode, ipPrevNode, ipHost = getNextAndPrevAndHostManual(listIp, *ipIndexFile)
+		joinRing(*ipConect)
+
+		// recebe mensagens do anel
+		go receiveMessageAnelListening()
 	}
-
-	// recebe mensagens do anel
-	go receiveMessageAnelListening()
-
-	fmt.Println("Se conectando a um super nó...")
-
-	//por padrao o endereço do superno de configuração inicial é o segundo elemento da lista de ips
-	ipSuperNo, _, _ := net.SplitHostPort(listIp[1])
-
-	ipSuperNo = ipSuperNo + ":" + *portaSuperNo
-
-	conn, err := net.Dial("tcp", ipSuperNo)
-	errorHandler(err, "Erro ao conectar ao super nó:", true)
-
-	fmt.Println("Conexão TCP estabelecida com sucesso")
-
-	privateKey = newHashSha1()
-
-	// configuração inicial com o supernó
-	tcpConfigSuperNo(conn)
 
 	// Wait forever
 	select {}
+}
+
+func joinRing(ipSuper string) {
+	//conecta solicita conexão super nó
+	buffer := make([]byte, 1024)
+
+	conn, err := net.Dial("tcp", ipSuper)
+
+	ipHost = conn.LocalAddr().String()
+	//utiliza o ip e porta da primeira conexão para a conexão em anel
+
+	defer conn.Close()
+	ipNextNode = ipSuper
+	if err != nil {
+		errorHandler(err, "Erro ao conectar ao servidor:", true)
+	}
+	//envia mensagem de solicitação de conexão
+	m := newMensagem("NovoServidor", ipHost, ipSuper, []byte(privateKey), ipHost, 0)
+
+	//m.enviarMensagemNext("NovoServidor")
+	conn.Write(m.toBytes())
+
+	// ack
+	n, _ := conn.Read(buffer)
+
+	buffer = buffer[:n]
+	m, _ = splitMensagem(string(buffer))
+	fmt.Println("Mensagem recebida, do superno: ", m.toString())
+
+	msg := newAck(conn.RemoteAddr().String())
+
+	conn.Write(msg.toBytes())
+
+	ipPrevNode = string(m.Conteudo)
+
+	fmt.Printf("guardo anterior [%s]\n", ipPrevNode)
+	//enviar  ack
+
+	ipPrevNode = strings.TrimSpace(ipPrevNode)
+	fmt.Println("passou do ack")
+	//enviar mensagem para o anterior atualizar o proximo ip
+
+	conn2, err1 := net.Dial("tcp", ipPrevNode)
+
+	if err1 != nil {
+		fmt.Println("Erro ao conectar ao servidor:", err1)
+		errorHandler(err1, "Erro ao conectar ao servidor:", true)
+	}
+
+	m = newMensagem("AtualizaProximo", ipHost, ipPrevNode, []byte(ipHost), ipHost, 0)
+
+	conn2.Write(m.toBytes())
+	n, err = conn2.Read(buffer)
+
+	m, _ = splitMensagem(string(buffer[:n]))
+
+	if !strings.EqualFold(m.Tipo, "ACK") {
+		if err != nil {
+			fmt.Println(err.Error())
+		}
+		fmt.Println("Erro ao atualizar anterior")
+	} else {
+		fmt.Println("anterior atualizado com sucesso")
+	}
 }
 
 // Conexões diretas com o nó servidor
@@ -407,11 +493,11 @@ func tcpConfigSuperNo(conn net.Conn) {
 		msg, _ = splitMensagem(string(buffer))
 
 		fmt.Println("Tabela de roteamento recebida do super nó: ")
-		err = json.Unmarshal(msg.Conteudo, &tabelasDeRoteamento)
+		err = json.Unmarshal(msg.Conteudo, &tabelasDeRoteamentoSupers)
 		errorHandler(err, "Erro ao converter tabela de roteamento:", true)
 
-		for _, supers := range tabelasDeRoteamento {
-			fmt.Println(supers)
+		for _, supers := range tabelasDeRoteamentoSupers {
+			fmt.Println(supers.IDHost, " --- ", supers.IPHost)
 		}
 	}
 }

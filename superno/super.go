@@ -14,10 +14,20 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
-var tabelasDeRoteamento []string
+type HostAnel struct {
+	IDHost string
+	IPHost string
+}
+
+var tabelaRoteamentoSuperNos []HostAnel
+var tabelasDeRoteamentoServidores []HostAnel
+
+var mutexTabelasDeSupers = sync.Mutex{}
+var mutexTabelasDeServ = sync.Mutex{}
 
 var ipNextNode string
 var connNextNode net.Conn = nil
@@ -55,6 +65,10 @@ func splitMensagem(mensagem string) (*Mensagem, error) {
 
 func newMensagem(tipo string, IpOrigem string, IpDestino string, conteudo []byte, IpHost string, jumpsCount int) *Mensagem {
 	return &Mensagem{tipo, IpOrigem, IpDestino, conteudo, IpHost, jumpsCount}
+}
+
+func newAck(ipDestino string) *Mensagem {
+	return &Mensagem{"ack", ipHost, ipDestino, []byte(""), ipHost, 0}
 }
 
 func (m *Mensagem) toString() string {
@@ -181,7 +195,7 @@ func tcpHandleMessages(conn net.Conn, ackChan chan<- bool) {
 
 		if strings.EqualFold(msg.Tipo, "roteamento-supers") {
 			// slice dos ips dos supernos
-			bytesRoteamento, err := json.Marshal(tabelasDeRoteamento)
+			bytesRoteamento, err := json.Marshal(tabelaRoteamentoSuperNos)
 			errorHandler(err, "Erro ao serializar tabela de roteamento: ", false)
 
 			msg = newMensagem("roteamento-supers", ipHost, msg.IpOrigem, bytesRoteamento, ipHost, 0)
@@ -295,6 +309,8 @@ func init() {
 }
 
 func main() {
+	privateKey = newHashSha1()
+
 	ipIndexFile := flag.Int("fi", -1, "Indice o arquivo de ips")
 
 	// porta utilizada para os servidores se conectarem
@@ -381,7 +397,7 @@ func configNoMestre(mestreConn net.Conn, finish chan<- bool) {
 	fmt.Println("Enviando ACK para o nó mestre...")
 
 	// envia um ACK com o IpHost real para a tabela de roteamento
-	msg = newMensagem("ack", ipHost, mestreConn.RemoteAddr().String(), []byte(ipHost), ipHost, 0)
+	msg = newMensagem("ack", ipHost, mestreConn.RemoteAddr().String(), []byte(privateKey+"/"+ipHost), ipHost, 0)
 
 	_, err = mestreConn.Write(msg.toBytes())
 	errorHandler(err, "Erro ao enviar ACK:", true)
@@ -420,10 +436,10 @@ func configNoMestre(mestreConn net.Conn, finish chan<- bool) {
 		msg, _ = splitMensagem(string(tabelaRoteamento))
 
 		fmt.Println("Tabela de roteamento recebida do mestre: ")
-		err = json.Unmarshal(msg.Conteudo, &tabelasDeRoteamento)
+		err = json.Unmarshal(msg.Conteudo, &tabelaRoteamentoSuperNos)
 		errorHandler(err, "Erro ao converter tabela de roteamento:", true)
 
-		for _, supers := range tabelasDeRoteamento {
+		for _, supers := range tabelaRoteamentoSuperNos {
 			fmt.Println(supers)
 		}
 
@@ -518,47 +534,101 @@ func receiveMessageAnelListening() {
 					continue
 				}
 
-				//separa de quem veio a mensagem
-				if msg.IpAtual == ipNextNode {
-					// aqui vai a logica de tratamento da mensagem (broadcast, etc)
+				if msg.IpOrigem == ipHost {
+					continue
+				}
 
-					if msg.IpDestino == ipHost { // usa a mensagem recebida
-						if msg.JumpsCount > 6 {
-							fmt.Println("Mensagem descartada por ter ultrapassado o limite de saltos")
-							continue
-						}
-					} else { // avalia o tipo e repassa a mensagem
-						switch msg.Tipo {
-						case "next": // repassa a mensagem
-							fmt.Println("Repassado a mensagem para o próximo nó")
-
-							msg.sendNextNode()
-						default:
-
-						}
-					}
-				} else if msg.IpAtual == ipPrevNode {
-					// aqui vai a logica de tratamento da mensagem (broadcast, etc)
-					if msg.IpDestino == ipHost { // usa a mensagem recebida
-						if msg.JumpsCount > 6 {
-							fmt.Println("Mensagem descartada por ter ultrapassado o limite de saltos")
-							continue
-						}
-					} else { // avalia o tipo e repassa a mensagem
-						switch msg.Tipo {
-						case "next": // repassa a mensagem
-							fmt.Println("Repassado a mensagem para o próximo nó")
-
-							msg.sendNextNode()
-						default:
-
-						}
+				if msg.IpDestino != ipHost {
+					if msg.IpAtual == ipNextNode {
+						msg.sendPrevNode()
+					} else if msg.IpAtual == ipPrevNode {
+						msg.sendNextNode()
+					} else {
+						// tunel
 					}
 				} else {
-					// tunnel connection. Aqui é onde algum nó faz uma conexão direta com o supernó
+					switch msg.Tipo {
+					case "NovoServidor":
+						myp := HostAnel{IDHost: string(msg.Conteudo), IPHost: conn.RemoteAddr().String()}
 
-					// apos fazer o que tem q ser feito. Fechara conexão
-					break
+						mutexTabelasDeServ.Lock()
+						tabelaAux := tabelasDeRoteamentoServidores
+						existe := false
+
+						for _, p := range tabelaAux {
+							if p.IDHost == string(msg.Conteudo) {
+								existe = true
+							}
+						}
+
+						if !existe {
+							tabelasDeRoteamentoServidores = append(tabelasDeRoteamentoServidores, myp)
+						} else {
+							fmt.Println("Servidor já registrado")
+						}
+
+						mutexTabelasDeServ.Unlock()
+
+						fmt.Println("Novo servidor registrado: ", string(msg.Conteudo), " ; ", conn.RemoteAddr().String())
+
+						newMsg := newMensagem("", ipHost, conn.RemoteAddr().String(), []byte(ipPrevNode), ipHost, 0)
+						conn.Write(newMsg.toBytes())
+
+						n, _ := conn.Read(buffer)
+						buffer = buffer[:n]
+						msg, _ = splitMensagem(string(buffer))
+						if msg.Tipo == "ack" {
+							fmt.Println("ACK recebido")
+							time.Sleep(1 * time.Second)
+
+							ipPrevNode = conn.RemoteAddr().String()
+							byteTabelaServidores, _ := json.Marshal(tabelasDeRoteamentoServidores)
+
+							for _, p := range tabelasDeRoteamentoServidores {
+								fmt.Println("Enviando tabela para: ", p.IPHost)
+								mensagemEnvio := newMensagem("AtualizarListaServer", ipHost, p.IPHost, byteTabelaServidores, ipHost, 0)
+								mensagemEnvio.sendNextNode()
+							}
+
+							for _, p := range tabelaRoteamentoSuperNos {
+								fmt.Println("Enviando tabela para: ", p.IPHost)
+								mensagemEnvio := newMensagem("AtualizarListaServer", ipHost, p.IPHost, byteTabelaServidores, ipHost, 0)
+								mensagemEnvio.sendNextNode()
+							}
+
+						}
+
+						conn.Write(newAck(conn.RemoteAddr().String()).toBytes())
+					case "AtualizarListaServer":
+
+						var tabelaAnelAux []HostAnel
+						var tabelaAnelAux2 []HostAnel
+						err := json.Unmarshal(msg.Conteudo, &tabelaAnelAux)
+						errorHandler(err, "Erro ao desconverter roteamento:", false)
+
+						mutexTabelasDeServ.Lock()
+						for _, p := range tabelaAnelAux { //laço para evitar itens duplicados
+							existe := false
+							for _, p2 := range tabelasDeRoteamentoServidores {
+
+								if p.IDHost == p2.IDHost {
+									existe = true
+
+								}
+
+							}
+							if !existe {
+								tabelaAnelAux2 = append(tabelaAnelAux2, p)
+							}
+						}
+						tabelasDeRoteamentoServidores = append(tabelasDeRoteamentoServidores, tabelaAnelAux2...)
+						mutexTabelasDeServ.Unlock()
+					case "AtualizaProximo":
+						ipNextNode = string(msg.Conteudo)
+						conn.Write(newAck(conn.RemoteAddr().String()).toBytes())
+					default:
+						fmt.Println("mensagem invalida")
+					}
 				}
 
 			}

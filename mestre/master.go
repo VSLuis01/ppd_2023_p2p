@@ -14,10 +14,20 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
-var tabelaRoteamentoSuperNos []string
+type HostAnel struct {
+	IDHost string
+	IPHost string
+}
+
+var tabelaRoteamentoSuperNos []HostAnel
+var tabelasDeRoteamentoServidores []HostAnel
+
+var mutexTabelasDeServ = sync.Mutex{}
+var mutexTabelasDeSupers = sync.Mutex{}
 
 var ipNextNode string
 var connNextNode net.Conn = nil
@@ -52,6 +62,10 @@ func splitMensagem(mensagem string) (*Mensagem, error) {
 
 func newMensagem(tipo string, IpOrigem string, IpDestino string, conteudo []byte, IpHost string, jumpsCount int) *Mensagem {
 	return &Mensagem{tipo, IpOrigem, IpDestino, conteudo, IpHost, jumpsCount}
+}
+
+func newAck(ipDestino string) *Mensagem {
+	return &Mensagem{"ack", ipHost, ipDestino, []byte(""), ipHost, 0}
 }
 
 func (m *Mensagem) toString() string {
@@ -179,7 +193,9 @@ func tcpHandleMessages(conn net.Conn, ackChan chan<- bool, finishChan chan<- boo
 		if strings.EqualFold(msg.Tipo, "ack") {
 			ackChan <- true
 
-			tabelaRoteamentoSuperNos = append(tabelaRoteamentoSuperNos, string(msg.Conteudo))
+			chaveIp := strings.Split(string(msg.Conteudo), "/")
+
+			tabelaRoteamentoSuperNos = append(tabelaRoteamentoSuperNos, HostAnel{chaveIp[0], chaveIp[1]})
 			continue
 		} else if strings.EqualFold(msg.Tipo, "roteamento-supers") {
 
@@ -242,53 +258,50 @@ func receiveMessageAnelListening() {
 				}
 
 				//separa de quem veio a mensagem
-				if msg.IpAtual == ipNextNode {
-					// aqui vai a logica de tratamento da mensagem (broadcast, etc)
+				if msg.IpOrigem == ipHost {
+					continue
+				}
 
-					if msg.IpDestino == ipHost { // usa a mensagem recebida
-						if msg.JumpsCount > 6 {
-							fmt.Println("Mensagem descartada por ter ultrapassado o limite de saltos")
-							fmt.Println(msg.toString())
-							continue
-						} else {
-							msg.sendNextNode()
-						}
-					} else { // avalia o tipo e repassa a mensagem
-						switch msg.Tipo {
-						case "next": // repassa a mensagem
-							fmt.Println("Repassado a mensagem para o próximo nó")
-
-							msg.sendNextNode()
-						default:
-
-						}
-					}
-
-				} else if msg.IpAtual == ipPrevNode {
-					// aqui vai a logica de tratamento da mensagem (broadcast, etc)
-					if msg.IpDestino == ipHost { // usa a mensagem recebida
-						if msg.JumpsCount > 6 {
-							fmt.Println("Mensagem descartada por ter ultrapassado o limite de saltos")
-							continue
-						} else {
-							fmt.Println("Repassado a mensagem para o próximo nó")
-							msg.sendNextNode()
-						}
-					} else { // avalia o tipo e repassa a mensagem
-						switch msg.Tipo {
-						case "next": // repassa a mensagem
-							fmt.Println("Repassado a mensagem para o próximo nó")
-
-							msg.sendNextNode()
-						default:
-
-						}
+				if msg.IpDestino != ipHost {
+					if msg.IpAtual == ipNextNode {
+						msg.sendPrevNode()
+					} else if msg.IpAtual == ipPrevNode {
+						msg.sendNextNode()
+					} else {
+						// tunel
 					}
 				} else {
-					// tunnel connection. Aqui é onde algum nó faz uma conexão direta com o mestre
+					switch msg.Tipo {
+					case "AtualizarListaServer":
 
-					// apos fazer o que tem q ser feito. Fechara conexão
-					break
+						var tabelaAnelAux []HostAnel
+						var tabelaAnelAux2 []HostAnel
+						err := json.Unmarshal(msg.Conteudo, &tabelaAnelAux)
+						errorHandler(err, "Erro ao desconverter roteamento:", false)
+
+						mutexTabelasDeServ.Lock()
+						for _, p := range tabelaAnelAux { //laço para evitar itens duplicados
+							existe := false
+							for _, p2 := range tabelasDeRoteamentoServidores {
+
+								if p.IDHost == p2.IDHost {
+									existe = true
+
+								}
+
+							}
+							if !existe {
+								tabelaAnelAux2 = append(tabelaAnelAux2, p)
+							}
+						}
+						tabelasDeRoteamentoServidores = append(tabelasDeRoteamentoServidores, tabelaAnelAux2...)
+						mutexTabelasDeServ.Unlock()
+					case "AtualizaProximo":
+						ipNextNode = string(msg.Conteudo)
+						conn.Write(newAck(conn.RemoteAddr().String()).toBytes())
+					default:
+						fmt.Println("mensagem invalida")
+					}
 				}
 
 			}
