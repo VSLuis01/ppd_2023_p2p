@@ -385,6 +385,7 @@ func init() {
 func main() {
 	// definindo a porta do nó mestre
 	ipIndexFile := flag.Int("fi", -1, "Indice o arquivo de ips")
+	portaInicial := flag.String("p", "8080", "Porta inicial do nó mestre")
 	flag.Parse()
 
 	listIp := openFileAndGetIps("../ips")
@@ -408,7 +409,7 @@ func main() {
 	ipHostInitialConfig, _, _ := net.SplitHostPort(ipHost)
 
 	// servidor tcp
-	tcpListener, err := net.Listen("tcp", ipHostInitialConfig+":8080")
+	tcpListener, err := net.Listen("tcp", ipHostInitialConfig+":"+*portaInicial)
 	errorHandler(err, "Erro ao criar servidor TCP: ", true)
 
 	defer tcpListener.Close()
