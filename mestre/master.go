@@ -300,7 +300,9 @@ func receiveMessageAnelListening() {
 						ipNextNode = string(msg.Conteudo)
 						conn.Write(newAck(conn.RemoteAddr().String()).toBytes())
 					default:
-						fmt.Println("mensagem invalida")
+						// se não encontrou nenhuma mensagem válida, repassa para o próximo
+						fmt.Println("Repassando mensagem para o próximo nó...")
+						msg.sendNextNode()
 					}
 				}
 

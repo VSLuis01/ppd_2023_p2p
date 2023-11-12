@@ -497,6 +497,13 @@ func handleServers(ip string, portForServers string, finishServersChan chan<- bo
 	return
 }
 
+func handleServidorArquivos() {
+	if connServidorArquivos != nil {
+		defer connServidorArquivos.Close()
+
+	}
+}
+
 // Receber conexoes da rede em anel
 func receiveMessageAnelListening() {
 	//tcpAddrIpHost, err := net.ResolveTCPAddr("tcp", ipHost)
@@ -641,8 +648,34 @@ func receiveMessageAnelListening() {
 					case "AtualizaProximo":
 						ipNextNode = string(msg.Conteudo)
 						conn.Write(newAck(conn.RemoteAddr().String()).toBytes())
+					case "FindSuper":
+						// abre uma conexão direta com o servidor de arquivo
+						connServidorArquivos, err = net.Dial("tcp", msg.IpOrigem)
+						if err == nil {
+							ipServidorArquivos = msg.IpOrigem
+
+							buf := make([]byte, 1024)
+
+							msgLen, _ := connServidorArquivos.Read(buf)
+							buf = buf[:msgLen]
+
+							msg, _ := splitMensagem(string(buf))
+
+							if msg.Tipo == "ack" {
+								connServidorArquivos.Write(newMensagem("ack", ipHost, ipServidorArquivos, []byte(ipHost), ipHost, 0).toBytes())
+
+								handleServidorArquivos()
+							}
+
+							fmt.Println("Conexão direta com o servidor de arquivos estabelecida com sucesso")
+						} else {
+							errorHandler(err, "Erro ao conectar com o servidor de arquivos: ", false)
+						}
+
 					default:
-						fmt.Println("mensagem invalida")
+						// se não encontrou nenhuma mensagem válida, repassa para o próximo
+						fmt.Println("Repassando mensagem para o próximo nó...")
+						msg.sendNextNode()
 					}
 				}
 

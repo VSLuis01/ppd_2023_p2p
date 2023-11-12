@@ -238,7 +238,9 @@ func receiveMessageAnelListening() {
 						tabelasDeRoteamentoServidores = append(tabelasDeRoteamentoServidores, tabelaAnelAux2...)
 						mutexTabelasDeServ.Unlock()
 					default:
-						fmt.Println("mensagem invalida")
+						// se não encontrou nenhuma mensagem válida, repassa para o próximo
+						fmt.Println("Repassando mensagem para o próximo nó...")
+						msg.sendNextNode()
 					}
 				}
 			}
