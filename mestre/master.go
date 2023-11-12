@@ -262,7 +262,7 @@ func receiveMessageAnelListening() {
 					continue
 				}
 
-				if msg.IpDestino != ipHost {
+				if msg.IpDestino != ipHost && msg.IpDestino != "" {
 					if msg.IpAtual == ipNextNode {
 						msg.sendPrevNode()
 					} else if msg.IpAtual == ipPrevNode {

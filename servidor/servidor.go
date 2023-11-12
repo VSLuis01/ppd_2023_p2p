@@ -199,7 +199,7 @@ func receiveMessageAnelListening() {
 					continue
 				}
 
-				if msg.IpDestino != ipHost {
+				if msg.IpDestino != ipHost && msg.IpDestino != "" {
 					if msg.IpAtual == ipNextNode {
 						msg.sendPrevNode()
 					} else if msg.IpAtual == ipPrevNode {
@@ -338,6 +338,7 @@ func main() {
 	ipIndexFile := flag.Int("fi", -1, "Indice o arquivo de ips")
 	portaSuperNo := flag.String("ps", "8001", "Porta do super nó")
 	ipConect := flag.String("c", "", "<ip>:<porta> de um superno. ")
+	portaInicial := flag.String("p", "40503", "Porta inicial do nó mestre")
 	flag.Parse()
 
 	listIp := openFileAndGetIps("../ips")
@@ -375,10 +376,12 @@ func main() {
 		// configuração inicial com o supernó
 		tcpConfigSuperNo(conn)
 	} else {
+		ipHost = ipHost + ":" + *portaInicial
+		go receiveMessageAnelListening()
 		joinRing(*ipConect)
 
 		// recebe mensagens do anel
-		go receiveMessageAnelListening()
+
 	}
 
 	// Wait forever
@@ -391,16 +394,17 @@ func joinRing(ipSuper string) {
 
 	conn, err := net.Dial("tcp", ipSuper)
 
-	ipHost = conn.LocalAddr().String()
 	//utiliza o ip e porta da primeira conexão para a conexão em anel
 
-	defer conn.Close()
+	//	defer conn.Close()
 	ipNextNode = ipSuper
 	if err != nil {
 		errorHandler(err, "Erro ao conectar ao servidor:", true)
 	}
+	h := HostAnel{IPHost: ipHost, IDHost: privateKey}
+	myhost, _ := json.Marshal(h)
 	//envia mensagem de solicitação de conexão
-	m := newMensagem("NovoServidor", ipHost, ipSuper, []byte(privateKey), ipHost, 0)
+	m := newMensagem("NovoServidor", ipHost, ipSuper, []byte(myhost), ipHost, 0)
 
 	//m.enviarMensagemNext("NovoServidor")
 	conn.Write(m.toBytes())
@@ -411,10 +415,6 @@ func joinRing(ipSuper string) {
 	buffer = buffer[:n]
 	m, _ = splitMensagem(string(buffer))
 	fmt.Println("Mensagem recebida, do superno: ", m.toString())
-
-	msg := newAck(conn.RemoteAddr().String())
-
-	conn.Write(msg.toBytes())
 
 	ipPrevNode = string(m.Conteudo)
 
@@ -447,6 +447,9 @@ func joinRing(ipSuper string) {
 	} else {
 		fmt.Println("anterior atualizado com sucesso")
 	}
+	msg := newAck(conn.RemoteAddr().String())
+
+	conn.Write(msg.toBytes())
 }
 
 // Conexões diretas com o nó servidor

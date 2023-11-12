@@ -35,12 +35,13 @@ var connNextNode net.Conn = nil
 var ipPrevNode string
 var connPrevNode net.Conn = nil
 
+var ipServidorArquivos string
+var connServidorArquivos net.Conn = nil
+
 var ipHost string
 var privateKey string
 
 var privateKeyMestre string
-
-var chavesServidores []map[string]string
 
 type Mensagem struct {
 	Tipo       string
@@ -52,12 +53,15 @@ type Mensagem struct {
 }
 
 func splitMensagem(mensagem string) (*Mensagem, error) {
+
 	mensagemSplit := strings.Split(mensagem, "#")
 
 	if len(mensagemSplit) == 6 {
 		jumps, _ := strconv.Atoi(mensagemSplit[5])
 		return &Mensagem{mensagemSplit[0], mensagemSplit[1], mensagemSplit[2], []byte(mensagemSplit[3]), mensagemSplit[4], jumps}, nil
 	} else {
+		fmt.Println(mensagem)
+		fmt.Println(mensagemSplit)
 		return nil, fmt.Errorf("mensagem inválida")
 	}
 
@@ -209,8 +213,8 @@ func tcpHandleMessages(conn net.Conn, ackChan chan<- bool) {
 			chaveIp := strings.Split(string(msg.Conteudo), "/")
 
 			// adiciona a chave do servidor
-			chavesServidores = append(chavesServidores, map[string]string{chaveIp[0]: chaveIp[1]})
 
+			tabelasDeRoteamentoServidores = append(tabelasDeRoteamentoServidores, HostAnel{chaveIp[0], chaveIp[1]})
 			msg = newMensagem("ack", ipHost, msg.IpOrigem, []byte("ack"), ipHost, 0)
 
 			_, err = conn.Write(msg.toBytes())
@@ -313,6 +317,8 @@ func main() {
 
 	ipIndexFile := flag.Int("fi", -1, "Indice o arquivo de ips")
 
+	portMestreInitial := flag.String("pm", "8080", "Porta da configuração inicial mestre")
+
 	// porta utilizada para os servidores se conectarem
 	portForServers := flag.String("p", "8001", "Porta destino")
 	flag.Parse()
@@ -347,7 +353,7 @@ func main() {
 
 	ipMestreInitialConfig, _, _ := net.SplitHostPort(ipMestre)
 
-	ipMestreInitialConfig = ipMestreInitialConfig + ":8080"
+	ipMestreInitialConfig = ipMestreInitialConfig + ":" + *portMestreInitial
 
 	// conecta com o mestre
 	mestreConn, err := net.Dial("tcp", ipMestreInitialConfig)
@@ -478,10 +484,9 @@ func handleServers(ip string, portForServers string, finishServersChan chan<- bo
 		fmt.Println("Ambos os servidores se conectaram com sucesso!")
 
 		fmt.Println("Chaves dos servidores: ")
-		for _, servidores := range chavesServidores {
-			for k, v := range servidores {
-				fmt.Println("Chave: ", k, " IP: ", v)
-			}
+
+		for _, servidore := range tabelasDeRoteamentoServidores {
+			fmt.Println("Chave: ", servidore.IDHost, " IP: ", servidore.IPHost)
 		}
 
 		finishServersChan <- true
@@ -538,7 +543,7 @@ func receiveMessageAnelListening() {
 					continue
 				}
 
-				if msg.IpDestino != ipHost {
+				if msg.IpDestino != ipHost && msg.IpDestino != "" {
 					if msg.IpAtual == ipNextNode {
 						msg.sendPrevNode()
 					} else if msg.IpAtual == ipPrevNode {
@@ -549,7 +554,12 @@ func receiveMessageAnelListening() {
 				} else {
 					switch msg.Tipo {
 					case "NovoServidor":
-						myp := HostAnel{IDHost: string(msg.Conteudo), IPHost: conn.RemoteAddr().String()}
+						var myp HostAnel
+						err := json.Unmarshal(msg.Conteudo, &myp)
+						//myp := HostAnel{IDHost: string(msg.Conteudo), IPHost: conn.RemoteAddr().String()}
+						if err != nil {
+							fmt.Println("erro de decodificar novo servidor")
+						}
 
 						mutexTabelasDeServ.Lock()
 						tabelaAux := tabelasDeRoteamentoServidores
@@ -583,17 +593,22 @@ func receiveMessageAnelListening() {
 
 							ipPrevNode = conn.RemoteAddr().String()
 							byteTabelaServidores, _ := json.Marshal(tabelasDeRoteamentoServidores)
-
+							fmt.Println(tabelasDeRoteamentoServidores)
 							for _, p := range tabelasDeRoteamentoServidores {
 								fmt.Println("Enviando tabela para: ", p.IPHost)
 								mensagemEnvio := newMensagem("AtualizarListaServer", ipHost, p.IPHost, byteTabelaServidores, ipHost, 0)
+								fmt.Println(mensagemEnvio.toString())
 								mensagemEnvio.sendNextNode()
+								time.Sleep(2 * time.Second)
 							}
 
+							fmt.Println(tabelaRoteamentoSuperNos)
 							for _, p := range tabelaRoteamentoSuperNos {
 								fmt.Println("Enviando tabela para: ", p.IPHost)
 								mensagemEnvio := newMensagem("AtualizarListaServer", ipHost, p.IPHost, byteTabelaServidores, ipHost, 0)
+								fmt.Println(mensagemEnvio.toString())
 								mensagemEnvio.sendNextNode()
+								time.Sleep(2 * time.Second)
 							}
 
 						}
