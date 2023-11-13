@@ -68,10 +68,6 @@ func newAck(ipDestino string) *Mensagem {
 	return &Mensagem{"ack", ipHost, ipDestino, []byte(""), ipHost, 0}
 }
 
-func (m *Mensagem) copy() *Mensagem {
-	return &Mensagem{m.Tipo, m.IpOrigem, m.IpDestino, m.Conteudo, m.IpAtual, m.JumpsCount}
-}
-
 func (m *Mensagem) toString() string {
 	return fmt.Sprintf("%s#%s#%s#%s#%s#%d", m.Tipo, m.IpOrigem, m.IpDestino, m.Conteudo, m.IpAtual, m.JumpsCount)
 }
@@ -98,52 +94,40 @@ func connectNextNode() net.Conn {
 	conn, err := net.Dial("tcp", ipNextNode)
 	errorHandler(err, "Erro ao conectar com o próximo nó: ", false)
 
-	if err == nil {
-		return conn
-	}
-
-	return nil
+	return conn
 }
 
 func connectPrevNode() net.Conn {
 	conn, err := net.Dial("tcp", ipPrevNode)
 	errorHandler(err, "Erro ao conectar com o anterior nó: ", false)
 
-	if err == nil {
-		return conn
-	}
-
-	return nil
+	return conn
 }
 
-func (m *Mensagem) sendNextNode() {
+func (m *Mensagem) sendNextNode() error {
 	if connNextNode == nil {
 		connNextNode = connectNextNode()
 	}
 
-	var err error
+	m.IpAtual = ipHost
+	m.JumpsCount++
 
-	if connNextNode != nil {
-		m.IpAtual = ipHost
-		m.JumpsCount++
+	_, err := connNextNode.Write(m.toBytes())
 
-		_, err = connNextNode.Write(m.toBytes())
-		errorHandler(err, "Erro ao enviar mensagem para o próximo nó: ", false)
-	}
+	return err
 }
 
-func (m *Mensagem) sendPrevNode() {
+func (m *Mensagem) sendPrevNode() error {
 	if connPrevNode == nil {
 		connPrevNode = connectPrevNode()
 	}
 
-	if connPrevNode != nil {
-		m.IpAtual = ipHost
-		m.JumpsCount++
+	m.IpAtual = ipHost
+	m.JumpsCount++
 
-		_, err := connPrevNode.Write(m.toBytes())
-		errorHandler(err, "Erro ao enviar mensagem para o anterior nó: ", false)
-	}
+	_, err := connPrevNode.Write(m.toBytes())
+
+	return err
 }
 
 func printIps() {
@@ -278,7 +262,7 @@ func receiveMessageAnelListening() {
 					continue
 				}
 
-				if msg.IpDestino != ipHost && msg.IpDestino != "" {
+				if msg.IpDestino != ipHost {
 					if msg.IpAtual == ipNextNode {
 						msg.sendPrevNode()
 					} else if msg.IpAtual == ipPrevNode {
@@ -316,24 +300,10 @@ func receiveMessageAnelListening() {
 						ipNextNode = string(msg.Conteudo)
 						conn.Write(newAck(conn.RemoteAddr().String()).toBytes())
 					default:
-						// se não encontrou nenhuma mensagem válida, repassa para o próximo e anterior
-						if msg.IpAtual == ipNextNode {
-							fmt.Println("Repassando mensagem para o nó anterior...")
-							msg.sendPrevNode()
-						} else if msg.IpAtual == ipPrevNode {
-							fmt.Println("Repassando mensagem para o próximo nó...")
-							msg.sendNextNode()
-						} else {
-							// repassa pros dois lados
-							fmt.Println("Repassando mensagem para o próximo e anterior nó...")
-							cMsg := msg.copy()
-							cMsg.sendNextNode()
-
-							cMsg = msg.copy()
-							cMsg.sendPrevNode()
-						}
+						fmt.Println("mensagem invalida")
 					}
 				}
+
 			}
 		}()
 	}
@@ -501,6 +471,13 @@ func main() {
 		}
 	} else {
 		fmt.Println("Erro ao conectar um ou mais nós.")
+	}
+
+	if <-finishChan {
+		// exemplos de mensagens que da a volta no anel duas vezes até chegar no nó mestre
+		msg := newMensagem("next", ipHost, ipHost, []byte("MENSAGEM ENVIADA VIA ANEL"), ipHost, 0)
+		err = msg.sendNextNode()
+		errorHandler(err, "Erro ao enviar mensagem para o próximo nó: ", false)
 	}
 
 	select {}

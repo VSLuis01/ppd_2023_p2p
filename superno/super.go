@@ -35,14 +35,12 @@ var connNextNode net.Conn = nil
 var ipPrevNode string
 var connPrevNode net.Conn = nil
 
-var ipServidorArquivos string
-var connServidorArquivos net.Conn = nil
-
 var ipHost string
 var privateKey string
 
 var privateKeyMestre string
 
+// struct da mensagemh
 type Mensagem struct {
 	Tipo       string
 	IpOrigem   string
@@ -75,10 +73,6 @@ func newAck(ipDestino string) *Mensagem {
 	return &Mensagem{"ack", ipHost, ipDestino, []byte(""), ipHost, 0}
 }
 
-func (m *Mensagem) copy() *Mensagem {
-	return &Mensagem{m.Tipo, m.IpOrigem, m.IpDestino, m.Conteudo, m.IpAtual, m.JumpsCount}
-}
-
 func (m *Mensagem) toString() string {
 	return fmt.Sprintf("%s#%s#%s#%s#%s#%d", m.Tipo, m.IpOrigem, m.IpDestino, m.Conteudo, m.IpAtual, m.JumpsCount)
 }
@@ -105,53 +99,42 @@ func connectNextNode() net.Conn {
 	conn, err := net.Dial("tcp", ipNextNode)
 	errorHandler(err, "Erro ao conectar com o próximo nó: ", false)
 
-	if err == nil {
-		return conn
-	}
-
-	return nil
+	return conn
 }
 
 func connectPrevNode() net.Conn {
 	conn, err := net.Dial("tcp", ipPrevNode)
 	errorHandler(err, "Erro ao conectar com o anterior nó: ", false)
 
-	if err == nil {
-		return conn
-	}
-
-	return nil
+	return conn
 }
 
-func (m *Mensagem) sendNextNode() {
+func (m *Mensagem) sendNextNode() error {
 	if connNextNode == nil {
 		connNextNode = connectNextNode()
 	}
 
-	var err error
+	m.IpAtual = ipHost
+	m.JumpsCount++
 
-	if connNextNode != nil {
-		m.IpAtual = ipHost
-		m.JumpsCount++
+	_, err := connNextNode.Write(m.toBytes())
 
-		_, err = connNextNode.Write(m.toBytes())
-		errorHandler(err, "Erro ao enviar mensagem para o próximo nó: ", false)
-	}
+	return err
 }
 
-func (m *Mensagem) sendPrevNode() {
+func (m *Mensagem) sendPrevNode() error {
 	if connPrevNode == nil {
 		connPrevNode = connectPrevNode()
 	}
 
-	if connPrevNode != nil {
-		m.IpAtual = ipHost
-		m.JumpsCount++
+	m.IpAtual = ipHost
+	m.JumpsCount++
 
-		_, err := connPrevNode.Write(m.toBytes())
-		errorHandler(err, "Erro ao enviar mensagem para o anterior nó: ", false)
-	}
+	_, err := connPrevNode.Write(m.toBytes())
+
+	return err
 }
+
 func printIps() {
 	fmt.Println("ipNextNo: ", ipNextNode)
 	fmt.Println("ipPrevNo: ", ipPrevNode)
@@ -332,8 +315,6 @@ func main() {
 
 	ipIndexFile := flag.Int("fi", -1, "Indice o arquivo de ips")
 
-	portMestreInitial := flag.String("pm", "8080", "Porta da configuração inicial mestre")
-
 	// porta utilizada para os servidores se conectarem
 	portForServers := flag.String("p", "8001", "Porta destino")
 	flag.Parse()
@@ -368,7 +349,7 @@ func main() {
 
 	ipMestreInitialConfig, _, _ := net.SplitHostPort(ipMestre)
 
-	ipMestreInitialConfig = ipMestreInitialConfig + ":" + *portMestreInitial
+	ipMestreInitialConfig = ipMestreInitialConfig + ":45661"
 
 	// conecta com o mestre
 	mestreConn, err := net.Dial("tcp", ipMestreInitialConfig)
@@ -512,21 +493,6 @@ func handleServers(ip string, portForServers string, finishServersChan chan<- bo
 	return
 }
 
-func handleServidorArquivos(msg *Mensagem) {
-	if connServidorArquivos != nil {
-		switch msg.Tipo {
-		case "uploadFile":
-			fmt.Println("Recebendo arquivo: ", string(msg.Conteudo))
-		case "downloadFile":
-			fmt.Println("Enviando arquivo: ", string(msg.Conteudo))
-		case "listFiles":
-			fmt.Println("Listando arquivos: ", string(msg.Conteudo))
-		case "findFile":
-			fmt.Println("Buscando arquivo: ", string(msg.Conteudo))
-		}
-	}
-}
-
 // Receber conexoes da rede em anel
 func receiveMessageAnelListening() {
 	//tcpAddrIpHost, err := net.ResolveTCPAddr("tcp", ipHost)
@@ -573,7 +539,7 @@ func receiveMessageAnelListening() {
 					continue
 				}
 
-				if msg.IpDestino != ipHost && msg.IpDestino != "" {
+				if msg.IpDestino != ipHost {
 					if msg.IpAtual == ipNextNode {
 						msg.sendPrevNode()
 					} else if msg.IpAtual == ipPrevNode {
@@ -671,46 +637,8 @@ func receiveMessageAnelListening() {
 					case "AtualizaProximo":
 						ipNextNode = string(msg.Conteudo)
 						conn.Write(newAck(conn.RemoteAddr().String()).toBytes())
-					case "FindSuper":
-						// abre uma conexão direta com o servidor de arquivo
-						connServidorArquivos, err = net.Dial("tcp", msg.IpOrigem)
-						if err == nil {
-							ipServidorArquivos = msg.IpOrigem
-
-							buf := make([]byte, 1024)
-
-							msgLen, _ := connServidorArquivos.Read(buf)
-							buf = buf[:msgLen]
-
-							msg, _ := splitMensagem(string(buf))
-
-							if msg.Tipo == "ack" {
-								connServidorArquivos.Write(newMensagem("ack", ipHost, ipServidorArquivos, []byte(ipHost), ipHost, 0).toBytes())
-
-							}
-
-							fmt.Println("Conexão direta com o servidor de arquivos estabelecida com sucesso")
-						} else {
-							errorHandler(err, "Erro ao conectar com o servidor de arquivos: ", false)
-						}
-
 					default:
-						// se não encontrou nenhuma mensagem válida, repassa para o próximo e anterior
-						if msg.IpAtual == ipNextNode {
-							fmt.Println("Repassando mensagem para o nó anterior...")
-							msg.sendPrevNode()
-						} else if msg.IpAtual == ipPrevNode {
-							fmt.Println("Repassando mensagem para o próximo nó...")
-							msg.sendNextNode()
-						} else {
-							// repassa pros dois lados
-							fmt.Println("Repassando mensagem para o próximo e anterior nó...")
-							cMsg := msg.copy()
-							cMsg.sendNextNode()
-
-							cMsg = msg.copy()
-							cMsg.sendPrevNode()
-						}
+						fmt.Println("mensagem invalida")
 					}
 				}
 
