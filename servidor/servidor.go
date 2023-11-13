@@ -68,6 +68,10 @@ func newAck(ipDestino string) *Mensagem {
 	return &Mensagem{"ack", ipHost, ipDestino, []byte(""), ipHost, 0}
 }
 
+func (m *Mensagem) copy() *Mensagem {
+	return &Mensagem{m.Tipo, m.IpOrigem, m.IpDestino, m.Conteudo, m.IpAtual, m.JumpsCount}
+}
+
 func (m *Mensagem) toString() string {
 	return fmt.Sprintf("%s#%s#%s#%s#%s#%d", m.Tipo, m.IpOrigem, m.IpDestino, m.Conteudo, m.IpAtual, m.JumpsCount)
 }
@@ -94,41 +98,54 @@ func connectNextNode() net.Conn {
 	conn, err := net.Dial("tcp", ipNextNode)
 	errorHandler(err, "Erro ao conectar com o próximo nó: ", false)
 
-	return conn
+	if err == nil {
+		return conn
+	}
+
+	return nil
 }
 
 func connectPrevNode() net.Conn {
 	conn, err := net.Dial("tcp", ipPrevNode)
 	errorHandler(err, "Erro ao conectar com o anterior nó: ", false)
 
-	return conn
+	if err == nil {
+		return conn
+	}
+
+	return nil
 }
 
-func (m *Mensagem) sendNextNode() error {
+func (m *Mensagem) sendNextNode() {
 	if connNextNode == nil {
 		connNextNode = connectNextNode()
 	}
 
-	m.IpAtual = ipHost
-	m.JumpsCount++
+	var err error
 
-	_, err := connNextNode.Write(m.toBytes())
+	if connNextNode != nil {
+		m.IpAtual = ipHost
+		m.JumpsCount++
 
-	return err
+		_, err = connNextNode.Write(m.toBytes())
+		errorHandler(err, "Erro ao enviar mensagem para o próximo nó: ", false)
+	}
 }
 
-func (m *Mensagem) sendPrevNode() error {
+func (m *Mensagem) sendPrevNode() {
 	if connPrevNode == nil {
 		connPrevNode = connectPrevNode()
 	}
 
-	m.IpAtual = ipHost
-	m.JumpsCount++
+	if connPrevNode != nil {
+		m.IpAtual = ipHost
+		m.JumpsCount++
 
-	_, err := connPrevNode.Write(m.toBytes())
-
-	return err
+		_, err := connPrevNode.Write(m.toBytes())
+		errorHandler(err, "Erro ao enviar mensagem para o anterior nó: ", false)
+	}
 }
+
 func printIps() {
 	fmt.Println("ipNextNo: ", ipNextNode)
 	fmt.Println("ipPrevNo: ", ipPrevNode)
@@ -237,10 +254,44 @@ func receiveMessageAnelListening() {
 						}
 						tabelasDeRoteamentoServidores = append(tabelasDeRoteamentoServidores, tabelaAnelAux2...)
 						mutexTabelasDeServ.Unlock()
+					case "uploadFile":
+						fmt.Println("Recebendo arquivo: ", string(msg.Conteudo))
+
+					case "downloadFile":
+						fmt.Println("Enviando arquivo: ", string(msg.Conteudo))
+					case "listFiles":
+						fmt.Println("Listando arquivos: ", string(msg.Conteudo))
+					case "findFile":
+						fmt.Println("Buscando arquivo: ", string(msg.Conteudo))
+
+					case "findServidor":
+						quantJumps := strconv.Itoa(msg.JumpsCount)
+
+						newMsg := newMensagem("findServidor", ipHost, msg.IpOrigem, []byte(ipHost+"/"+quantJumps), ipHost, 0)
+
+						if msg.IpAtual == ipNextNode {
+							newMsg.sendPrevNode()
+						} else {
+							newMsg.sendNextNode()
+						}
+
 					default:
-						// se não encontrou nenhuma mensagem válida, repassa para o próximo
-						fmt.Println("Repassando mensagem para o próximo nó...")
-						msg.sendNextNode()
+						// se não encontrou nenhuma mensagem válida, repassa para o próximo e anterior
+						if msg.IpAtual == ipNextNode {
+							fmt.Println("Repassando mensagem para o nó anterior...")
+							msg.sendPrevNode()
+						} else if msg.IpAtual == ipPrevNode {
+							fmt.Println("Repassando mensagem para o próximo nó...")
+							msg.sendNextNode()
+						} else {
+							// repassa pros dois lados
+							fmt.Println("Repassando mensagem para o próximo e anterior nó...")
+							cMsg := msg.copy()
+							cMsg.sendNextNode()
+
+							cMsg = msg.copy()
+							cMsg.sendPrevNode()
+						}
 					}
 				}
 			}

@@ -26,6 +26,8 @@ type Arquivos struct {
 	Cliente     HostAnel
 }
 
+var tabelaArquivos []Arquivos
+
 var privateKey string
 
 var ipHost string
@@ -141,6 +143,7 @@ func findSuperNo(someIp string) net.Conn {
 	conn.Write(newMensagem("FindSuper", ipHost, "", []byte(""), ipHost, 0).toBytes())
 
 	listener, err := net.Listen("tcp", ipHost)
+	defer listener.Close()
 	errorHandler(err, "Erro ao abrir porta para receber resposta do supernó: ", true)
 
 	connSuper, err := listener.Accept()
@@ -193,6 +196,21 @@ func handleTcpMessages(conn net.Conn) {
 		case "ack":
 			ipSuperNo = string(msg.Conteudo)
 			fmt.Println("Conectado com o supernó: ", ipSuperNo)
+		case "uploadFile":
+			fmt.Println("Recebendo arquivo: ", string(msg.Conteudo))
+			//arquivo := strings.Split(string(msg.Conteudo), "/")
+
+			//hostAnel := HostAnel{arquivo[0], msg.IpOrigem}
+
+			//tabelaArquivos = append(tabelaArquivos, Arquivos{arquivo[1], hostAnel})
+
+			conn.Write(newAck(msg.IpOrigem).toBytes())
+		case "downloadFile":
+			fmt.Println("Enviando arquivo: ", string(msg.Conteudo))
+		case "listFiles":
+			fmt.Println("Listando arquivos: ", string(msg.Conteudo))
+		case "findFile":
+			fmt.Println("Buscando arquivo: ", string(msg.Conteudo))
 		}
 
 	}
