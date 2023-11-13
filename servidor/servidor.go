@@ -265,6 +265,7 @@ func receiveMessageAnelListening() {
 						fmt.Println("Buscando arquivo: ", string(msg.Conteudo))
 
 					case "findServidor":
+						fmt.Println("Enviando IP para cliente, jumps: ", msg.JumpsCount)
 						quantJumps := strconv.Itoa(msg.JumpsCount)
 
 						newMsg := newMensagem("findServidor", ipHost, msg.IpOrigem, []byte(ipHost+"/"+quantJumps), ipHost, 0)

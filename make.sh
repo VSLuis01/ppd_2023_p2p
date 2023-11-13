@@ -8,7 +8,7 @@ if [ "$1" == "clean" ]; then
 fi
 
 # Lista de diretórios com seus respectivos go.mod
-MODULES=("mestre" "superno" "servidor" "servidor_de_arquivos")
+MODULES=("mestre" "superno" "servidor" "servidor_de_arquivos" "client")
 
 # Loop para compilar cada módulo
 for module in "${MODULES[@]}"

@@ -42,8 +42,8 @@ var ipSuperNo string
 
 var connSuperNo net.Conn
 
-var findServidorNextChannel chan *Mensagem = nil
-var findServidorPrevChannel chan *Mensagem = nil
+var findServidorNext *Mensagem = nil
+var findServidorPrev *Mensagem = nil
 
 type Mensagem struct {
 	Tipo       string
@@ -286,7 +286,12 @@ func receiveMessageAnelListening() {
 					}
 				} else {
 					switch msg.Tipo {
-
+					case "findServidor":
+						if msg.IpAtual == ipNextNode {
+							findServidorNext = msg
+						} else if msg.IpAtual == ipPrevNode {
+							findServidorPrev = msg
+						}
 					default:
 						// se não encontrou nenhuma mensagem válida, repassa para o próximo e anterior
 						if msg.IpAtual == ipNextNode {
@@ -420,50 +425,44 @@ func menu() {
 }
 
 func resetChannels() {
-	findServidorNextChannel = nil
-	findServidorPrevChannel = nil
+	findServidorNext = nil
+	findServidorPrev = nil
 }
 
 func findClosestServidor() net.Conn {
 	defer resetChannels()
 
-	msgNext := newMensagem("findServidor", ipHost, ipNextNode, []byte(""), ipHost, 0)
-	msgPrev := newMensagem("findServidor", ipHost, ipPrevNode, []byte(""), ipHost, 0)
+	msgNext := newMensagem("findServidor", ipHost, "", []byte(""), ipHost, 0)
+	msgPrev := newMensagem("findServidor", ipHost, "", []byte(""), ipHost, 0)
 
 	msgNext.sendNextNode()
 	msgPrev.sendPrevNode()
 
-	findServidorNextChannel = make(chan *Mensagem)
-	findServidorPrevChannel = make(chan *Mensagem)
-
 	var conn net.Conn
-
-	if <-findServidorNextChannel != nil && <-findServidorPrevChannel != nil {
-
-		msgNext, _ = <-findServidorNextChannel
-		msgPrev, _ = <-findServidorPrevChannel
-
-		ipJumpNext := strings.Split(string(msgNext.Conteudo), "/")
-		ipJumpPrev := strings.Split(string(msgPrev.Conteudo), "/")
-
-		if ipJumpNext[1] < ipJumpPrev[1] {
-			conn, _ = net.Dial("tcp", ipJumpNext[0])
-		} else {
-			conn, _ = net.Dial("tcp", ipJumpPrev[0])
-
+	fmt.Println("Procurando servidores...")
+	for {
+		if findServidorNext != nil && findServidorPrev != nil {
+			break
 		}
-
-		fmt.Println("Encontrou o servidor mais próximo")
 	}
+
+	ipJumpNext := strings.Split(string(findServidorNext.Conteudo), "/")
+	ipJumpPrev := strings.Split(string(findServidorPrev.Conteudo), "/")
+
+	if ipJumpNext[1] < ipJumpPrev[1] {
+		conn, _ = net.Dial("tcp", ipJumpNext[0])
+	} else {
+		conn, _ = net.Dial("tcp", ipJumpPrev[0])
+	}
+
+	fmt.Println("Conexão estabelecida com o servidor: ", conn.RemoteAddr().String())
 
 	return conn
 }
 
 func handleOpcoes(opcao int) {
 
-	connServidor := findClosestServidor()
-
-	fmt.Println(connServidor.RemoteAddr().String())
+	//connServidor := findClosestServidor()
 
 	switch opcao {
 	case 1:
