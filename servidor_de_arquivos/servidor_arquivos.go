@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"crypto/sha1"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -152,11 +153,26 @@ func findSuperNo(someIp string) net.Conn {
 	return connSuper
 }
 
+func getIpHost() (string, error) {
+	addrs, err := net.InterfaceAddrs()
+	errorHandler(err, "Erro ao obter endereços da interface: ", true)
+
+	for _, address := range addrs {
+		ipNet, ok := address.(*net.IPNet)
+		if ok && !ipNet.IP.IsLoopback() && ipNet.IP.To4() != nil {
+			return ipNet.IP.String(), nil
+		}
+	}
+	return "", fmt.Errorf("não foi possível obter o endereço IP da máquina")
+}
+
 func main() {
 	portaServidorArquivos := flag.String("p", "9090", "Porta do servidor de arquivos")
 	flag.Parse()
 
 	listIp := openFileAndGetIps("../ips")
+
+	ipHost, _ = getIpHost()
 
 	ipHost = ipHost + ":" + *portaServidorArquivos
 
@@ -197,18 +213,34 @@ func handleTcpMessages(conn net.Conn) {
 			ipSuperNo = string(msg.Conteudo)
 			fmt.Println("Conectado com o supernó: ", ipSuperNo)
 		case "uploadFile":
-			fmt.Println("Recebendo arquivo: ", string(msg.Conteudo))
-			//arquivo := strings.Split(string(msg.Conteudo), "/")
+			arquivo := strings.Split(string(msg.Conteudo), "/")
 
-			//hostAnel := HostAnel{arquivo[0], msg.IpOrigem}
+			hostAnel := HostAnel{arquivo[0], msg.IpOrigem}
 
-			//tabelaArquivos = append(tabelaArquivos, Arquivos{arquivo[1], hostAnel})
+			tabelaArquivos = append(tabelaArquivos, Arquivos{arquivo[1], hostAnel})
 
 			conn.Write(newAck(msg.IpOrigem).toBytes())
+
+			for _, tabelaArquivo := range tabelaArquivos {
+				fmt.Printf("%s - %s: %s\n", tabelaArquivo.Cliente.IDHost, tabelaArquivo.Cliente.IPHost, tabelaArquivo.NomeArquivo)
+			}
 		case "downloadFile":
 			fmt.Println("Enviando arquivo: ", string(msg.Conteudo))
 		case "listFiles":
 			fmt.Println("Listando arquivos: ", string(msg.Conteudo))
+
+			bytesTabelaArquivos, _ := json.Marshal(tabelaArquivos)
+
+			var nMsg *Mensagem
+
+			if len(tabelaArquivos) == 0 {
+				nMsg = newMensagem("NoFiles", ipHost, msg.IpOrigem, []byte("Nenhum arquivo encontrado"), ipHost, 0)
+			} else {
+				nMsg = newMensagem("ack", ipHost, msg.IpOrigem, bytesTabelaArquivos, ipHost, 0)
+			}
+
+			conn.Write(nMsg.toBytes())
+
 		case "findFile":
 			fmt.Println("Buscando arquivo: ", string(msg.Conteudo))
 		}

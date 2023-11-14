@@ -274,7 +274,7 @@ func receiveMessageAnelListening() {
 				}
 
 				//separa de quem veio a mensagem
-				if msg.IpOrigem == ipHost {
+				if msg.IpOrigem == ipHost || msg.JumpsCount > 20 {
 					continue
 				}
 

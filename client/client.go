@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"crypto/sha1"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -25,8 +27,6 @@ type Arquivos struct {
 	NomeArquivo string
 	Cliente     HostAnel
 }
-
-var tabelaArquivos []Arquivos
 
 var ipNextNode string
 var connNextNode net.Conn = nil
@@ -242,7 +242,6 @@ func receiveMessageAnelListening() {
 		return
 	}
 
-	fmt.Println("Aguardando conexões do anel...")
 	for {
 		conn, err := tcpListener.Accept()
 		if err != nil {
@@ -272,7 +271,7 @@ func receiveMessageAnelListening() {
 				}
 
 				//separa de quem veio a mensagem
-				if msg.IpOrigem == ipHost {
+				if msg.IpOrigem == ipHost || msg.JumpsCount > 20 {
 					continue
 				}
 
@@ -353,19 +352,38 @@ func getIpHost() (string, error) {
 	return "", fmt.Errorf("não foi possível obter o endereço IP da máquina")
 }
 
-func findServidor(someIp string) net.Conn {
-	conn, err := net.Dial("tcp", someIp)
-	errorHandler(err, "Erro ao conectar com algum nó do anel: ", true)
+func getFilesWithExtensionsInDir() []string {
+	var files []string
 
-	conn.Write(newMensagem("FindSuper", ipHost, "", []byte(""), ipHost, 0).toBytes())
+	dir, err := os.Open("./")
+	if err != nil {
+		fmt.Println("Erro ao abrir diretório:", err)
+		return files
+	}
+	defer dir.Close()
 
-	listener, err := net.Listen("tcp", ipHost)
-	errorHandler(err, "Erro ao abrir porta para receber resposta do supernó: ", true)
+	fileInfos, err := dir.Readdir(-1)
+	if err != nil {
+		fmt.Println("Erro ao ler diretório:", err)
+		return files
+	}
 
-	connSuper, err := listener.Accept()
-	errorHandler(err, "Erro ao receber resposta do supernó: ", true)
+	for _, fileInfo := range fileInfos {
+		if !fileInfo.IsDir() {
+			// Verifica se o arquivo tem uma extensão
+			if hasExtension(fileInfo.Name()) {
+				files = append(files, fileInfo.Name())
+			}
+		}
+	}
 
-	return connSuper
+	return files
+}
+
+// Função auxiliar para verificar se um arquivo tem uma extensão
+func hasExtension(filename string) bool {
+	ext := filepath.Ext(filename)
+	return ext != ""
 }
 
 func init() {
@@ -390,8 +408,6 @@ func main() {
 	// pega o ip da máquina sem a porta
 	ipHost, err = getIpHost()
 	errorHandler(err, "", true)
-
-	fmt.Println(ipHost)
 
 	if *ipIndexFile == -1 {
 		ipNextNode, ipPrevNode, ipHost = getNextAndPrevAuto(listIp, ipHost)
@@ -461,18 +477,138 @@ func findClosestServidor() net.Conn {
 }
 
 func handleOpcoes(opcao int) {
+	// aguarda ack
+	buffer := make([]byte, 1024)
 
-	//connServidor := findClosestServidor()
+	connServidor := findClosestServidor()
 
+	err := connServidor.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if err != nil {
+		fmt.Println("Erro ao definir prazo de leitura:", err)
+		return
+	}
+
+	defer connServidor.Close()
 	switch opcao {
 	case 1:
-		fmt.Println("Upload arquivo")
+		arquivosDiretorio := getFilesWithExtensionsInDir()
+
+		var arquivo string
+
+		for {
+			fmt.Println("Arquivos disponíveis: ")
+			for i, file := range arquivosDiretorio {
+				fmt.Printf("\t%d - %s\n", i+1, file)
+			}
+			fmt.Println()
+
+			var opcao int
+			fmt.Print("Opção: ")
+			fmt.Scan(&opcao)
+
+			if opcao >= 1 && opcao <= len(arquivosDiretorio) {
+				arquivo = arquivosDiretorio[opcao-1]
+				break
+			} else {
+				fmt.Printf("Opção inválida!\n\n")
+			}
+		}
+
+		msg := newMensagem("uploadFile", ipHost, connServidor.RemoteAddr().String(), []byte(privateKey+"/"+arquivo), ipHost, 0)
+
+		connServidor.Write(msg.toBytes())
+
+		msgLen, err := connServidor.Read(buffer)
+
+		if err != nil {
+			// Verifique se o erro é devido ao prazo expirado
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				fmt.Println("Tempo limite expirado. Problema com o servidor de arquivos.")
+			} else {
+				// Outro erro, imprima ou trate conforme necessário
+				fmt.Println("Erro ao receber respostas da requisição:", err)
+			}
+			return
+		}
+
+		buffer = buffer[:msgLen]
+
+		msg, err = splitMensagem(string(buffer))
+		errorHandler(err, "", false)
+
+		if err == nil {
+			if msg.Tipo == "ack" {
+				fmt.Println("Arquivo enviado com sucesso!")
+			} else {
+				fmt.Println("Erro ao enviar arquivo!")
+			}
+		}
+
 	case 2:
 		fmt.Println("Download arquivo")
+
+	//	downloadFile
 	case 3:
-		fmt.Println("Listar arquivos")
+		fmt.Println()
+		msg := newMensagem("listFiles", ipHost, connServidor.RemoteAddr().String(), []byte(""), ipHost, 0)
+
+		connServidor.Write(msg.toBytes())
+
+		// aguarda ack
+		msgLen, err := connServidor.Read(buffer)
+
+		if err != nil {
+			// Verifique se o erro é devido ao prazo expirado
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				fmt.Println("Tempo limite expirado. Problema com o servidor de arquivos.")
+			} else {
+				// Outro erro, imprima ou trate conforme necessário
+				fmt.Println("Erro ao receber respostas da requisição:", err)
+			}
+			return
+		}
+
+		errorHandler(err, "Erro ao receber respostas da requisição: ", false)
+		buffer = buffer[:msgLen]
+
+		msg, err = splitMensagem(string(buffer))
+		errorHandler(err, "", false)
+
+		if err == nil {
+			if msg.Tipo == "ack" {
+				// listar arquivos
+				var tabelaArquivos []Arquivos
+
+				err = json.Unmarshal(msg.Conteudo, &tabelaArquivos)
+				errorHandler(err, "Erro ao desconverter tabela de arquivos: ", false)
+
+				if err == nil {
+					fmt.Printf("************* Arquivos disponiveis *************\n")
+					peerFlag := false
+					var lastPeer string
+					for _, tabelaArquivo := range tabelaArquivos {
+						if lastPeer != tabelaArquivo.Cliente.IPHost && peerFlag {
+							peerFlag = false
+						}
+
+						if !peerFlag {
+							fmt.Printf("Peer: %s\n", tabelaArquivo.Cliente.IPHost)
+							peerFlag = true
+						}
+						fmt.Printf("\t %s", tabelaArquivo.NomeArquivo)
+						lastPeer = tabelaArquivo.Cliente.IPHost
+					}
+					fmt.Printf("\n\n")
+				}
+			} else {
+				fmt.Println(msg.Tipo + ": " + string(msg.Conteudo))
+				fmt.Println()
+			}
+		}
 	case 4:
 		fmt.Println("Buscar arquivo")
+
+		//findFile
 	case 5:
 		fmt.Println("Sair")
 	}

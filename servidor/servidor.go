@@ -181,6 +181,35 @@ func openFileAndGetIps(filename string) []string {
 	return ips
 }
 
+func handleClientRequisicao(connSuper net.Conn, super HostAnel, msg *Mensagem, newMsg chan *Mensagem, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	defer connSuper.Close()
+
+	fmt.Println("Repassando requisição do cliente para o super nó: ", super.IPHost)
+
+	msg.IpAtual = ipHost
+	msg.JumpsCount++
+	msg.IpDestino = super.IPHost
+
+	connSuper.Write(msg.toBytes())
+
+	buf := make([]byte, 1024)
+
+	msgLen, _ := connSuper.Read(buf)
+	buf = buf[:msgLen]
+
+	msg, err := splitMensagem(string(buf))
+	errorHandler(err, "(handleClientRequisicao): ", false)
+
+	if err == nil {
+		msg.JumpsCount++
+		msg.IpAtual = ipHost
+
+		newMsg <- msg
+	}
+}
+
 // Receber conexoes da rede em anel
 func receiveMessageAnelListening() {
 	tcpListener, err := net.Listen("tcp", ipHost)
@@ -190,7 +219,6 @@ func receiveMessageAnelListening() {
 		return
 	}
 
-	fmt.Println("Servidor TCP do anel iniciado com sucesso")
 	for {
 		conn, err := tcpListener.Accept()
 		errorHandler(err, "Erro ao aceitar conexão TCP: ", false)
@@ -212,7 +240,7 @@ func receiveMessageAnelListening() {
 
 				msg, _ := splitMensagem(string(mensagem))
 
-				if msg.IpOrigem == ipHost {
+				if msg.IpOrigem == ipHost || msg.JumpsCount > 20 {
 					continue
 				}
 
@@ -254,15 +282,39 @@ func receiveMessageAnelListening() {
 						}
 						tabelasDeRoteamentoServidores = append(tabelasDeRoteamentoServidores, tabelaAnelAux2...)
 						mutexTabelasDeServ.Unlock()
-					case "uploadFile":
-						fmt.Println("Recebendo arquivo: ", string(msg.Conteudo))
+					case "uploadFile", "downloadFile", "listFiles", "findFile":
+						var wg sync.WaitGroup
+						newMsg := make(chan *Mensagem, 2)
 
-					case "downloadFile":
-						fmt.Println("Enviando arquivo: ", string(msg.Conteudo))
-					case "listFiles":
-						fmt.Println("Listando arquivos: ", string(msg.Conteudo))
-					case "findFile":
-						fmt.Println("Buscando arquivo: ", string(msg.Conteudo))
+						// Incrementa o WaitGroup para o número de goroutines que serão criadas
+						wg.Add(len(tabelasDeRoteamentoSupers))
+
+						// Cria goroutines para lidar com as requisições
+						for _, super := range tabelasDeRoteamentoSupers {
+							connSuper, err := net.Dial("tcp", super.IPHost)
+
+							if err == nil {
+								go handleClientRequisicao(connSuper, super, msg, newMsg, &wg)
+							}
+
+							time.Sleep(750 * time.Millisecond)
+						}
+
+						// Goroutine para esperar todas as goroutines concluírem
+						go func() {
+							wg.Wait()
+							close(newMsg) // Fecha o canal quando todas as goroutines concluírem
+						}()
+
+						// Recebe todas as mensagens do canal
+						for msg := range newMsg {
+							if msg.Tipo != "NotFound" {
+								msg.IpDestino = conn.RemoteAddr().String()
+								conn.Write(msg.toBytes())
+							} else {
+								fmt.Println("Falha ao enviar requisição para o super nó: ", msg.Tipo+": "+string(msg.Conteudo))
+							}
+						}
 
 					case "findServidor":
 						fmt.Println("Enviando IP para cliente, jumps: ", msg.JumpsCount)

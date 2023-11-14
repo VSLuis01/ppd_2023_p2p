@@ -346,8 +346,6 @@ func main() {
 	ipHost, err = getIpHost()
 	errorHandler(err, "", true)
 
-	fmt.Println(ipHost)
-
 	if *ipIndexFile == -1 {
 		ipNextNode, ipPrevNode, ipHost = getNextAndPrevAuto(listIp, ipHost)
 	} else {
@@ -415,8 +413,6 @@ func configNoMestre(mestreConn net.Conn, finish chan<- bool) {
 	//go tcpHandleIncomingMessages(mestreConn)
 	fmt.Println("Chave recebida do mestre: ", privateKeyMestre)
 
-	fmt.Println("Enviando ACK para o nó mestre...")
-
 	// envia um ACK com o IpHost real para a tabela de roteamento
 	msg = newMensagem("ack", ipHost, mestreConn.RemoteAddr().String(), []byte(privateKey+"/"+ipHost), ipHost, 0)
 
@@ -438,7 +434,6 @@ func configNoMestre(mestreConn net.Conn, finish chan<- bool) {
 	// registros dos super nós finalizados
 	if msg.Tipo == "ok" {
 		// solicitando tabela de roteamento
-		fmt.Println("Solicitando tabela de roteamento ao mestre...")
 
 		msg = newMensagem("roteamento-supers", ipHost, mestreConn.RemoteAddr().String(), []byte(""), ipHost, 0)
 
@@ -512,19 +507,20 @@ func handleServers(ip string, portForServers string, finishServersChan chan<- bo
 	return
 }
 
-func handleServidorArquivos(msg *Mensagem) {
-	if connServidorArquivos != nil {
-		switch msg.Tipo {
-		case "uploadFile":
-			fmt.Println("Recebendo arquivo: ", string(msg.Conteudo))
-		case "downloadFile":
-			fmt.Println("Enviando arquivo: ", string(msg.Conteudo))
-		case "listFiles":
-			fmt.Println("Listando arquivos: ", string(msg.Conteudo))
-		case "findFile":
-			fmt.Println("Buscando arquivo: ", string(msg.Conteudo))
-		}
-	}
+func handleServidorArquivos(msg *Mensagem) *Mensagem {
+	connServidorArquivos.Write(msg.toBytes())
+
+	buffer := make([]byte, 1024)
+	msgLen, _ := connServidorArquivos.Read(buffer)
+	buffer = buffer[:msgLen]
+
+	msg, _ = splitMensagem(string(buffer))
+
+	msg.JumpsCount++
+	msg.IpAtual = ipHost
+
+	return msg
+
 }
 
 // Receber conexoes da rede em anel
@@ -569,9 +565,11 @@ func receiveMessageAnelListening() {
 					continue
 				}
 
-				if msg.IpOrigem == ipHost {
+				if msg.IpOrigem == ipHost || msg.JumpsCount > 20 {
 					continue
 				}
+
+				fmt.Println(msg.toString())
 
 				if msg.IpDestino != ipHost && msg.IpDestino != "" {
 					if msg.IpAtual == ipNextNode {
@@ -686,7 +684,6 @@ func receiveMessageAnelListening() {
 
 							if msg.Tipo == "ack" {
 								connServidorArquivos.Write(newMensagem("ack", ipHost, ipServidorArquivos, []byte(ipHost), ipHost, 0).toBytes())
-
 							}
 
 							fmt.Println("Conexão direta com o servidor de arquivos estabelecida com sucesso")
@@ -694,6 +691,25 @@ func receiveMessageAnelListening() {
 							errorHandler(err, "Erro ao conectar com o servidor de arquivos: ", false)
 						}
 
+					case "uploadFile", "downloadFile", "listFiles", "findFile":
+						fmt.Println("Enviando requisição para o servidor de arquivos...")
+
+						var nMsg *Mensagem = nil
+
+						if connServidorArquivos != nil {
+							msg.IpAtual = ipHost
+							msg.JumpsCount++
+							msg.IpDestino = connServidorArquivos.RemoteAddr().String()
+
+							nMsg = handleServidorArquivos(msg)
+						}
+
+						if nMsg != nil {
+							conn.Write(nMsg.toBytes())
+						} else {
+							fmt.Println("Servidor de arquivos não encontrado")
+							conn.Write(newMensagem("NotFound", ipHost, conn.RemoteAddr().String(), []byte("Servidor de arquivos não encontrado"), ipHost, 0).toBytes())
+						}
 					default:
 						// se não encontrou nenhuma mensagem válida, repassa para o próximo e anterior
 						if msg.IpAtual == ipNextNode {
