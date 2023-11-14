@@ -272,6 +272,23 @@ func receiveMessageAnelListening() {
 					}
 				} else {
 					switch msg.Tipo {
+					case "AtualizarListaServerSaida":
+						var tabelaAnelAux []HostAnel
+
+						err := json.Unmarshal(msg.Conteudo, &tabelaAnelAux)
+						if err != nil {
+							fmt.Println("erro de decodificar saida servidor")
+						}
+						mutexTabelasDeServ.Lock()
+						aux := tabelasDeRoteamentoServidores
+						for i, p := range tabelasDeRoteamentoServidores {
+							if p.IDHost == string(msg.Conteudo) {
+								aux = append(aux[:i], aux[i+1:]...)
+								tabelasDeRoteamentoServidores = append(tabelasDeRoteamentoServidores[:i], tabelasDeRoteamentoServidores[i+1:]...)
+							}
+
+						}
+						mutexTabelasDeServ.Unlock()
 					case "AtualizarListaServer":
 
 						var tabelaAnelAux []HostAnel

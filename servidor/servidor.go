@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
@@ -71,7 +72,24 @@ func newAck(ipDestino string) *Mensagem {
 func (m *Mensagem) toString() string {
 	return fmt.Sprintf("%s#%s#%s#%s#%s#%d", m.Tipo, m.IpOrigem, m.IpDestino, m.Conteudo, m.IpAtual, m.JumpsCount)
 }
+func exitRing() {
 
+	//informa um superno
+	destino := tabelasDeRoteamentoSupers[0].IPHost
+
+	m := newMensagem("ServidorSairAnel", ipHost, destino, []byte(privateKey), ipHost, 0)
+	m.sendNextNode()
+	//espera  por um tempo
+	time.Sleep(1 * time.Second)
+
+	//informa antecessor e sucessor
+	m = newMensagem("AtualizaProximo", ipHost, ipPrevNode, []byte(ipNextNode), ipHost, 0)
+	m.sendPrevNode()
+	m = newMensagem("AtualizaAnt", ipHost, ipNextNode, []byte(ipPrevNode), ipHost, 0)
+	m.sendNextNode()
+	time.Sleep(1 * time.Second)
+
+}
 func (m *Mensagem) toBytes() []byte {
 	return []byte(m.toString())
 }
@@ -213,6 +231,23 @@ func receiveMessageAnelListening() {
 						ipNextNode = string(msg.Conteudo)
 
 						conn.Write(newAck(conn.RemoteAddr().String()).toBytes())
+					case "AtualizarListaServerSaida":
+						var tabelaAnelAux []HostAnel
+
+						err := json.Unmarshal(msg.Conteudo, &tabelaAnelAux)
+						if err != nil {
+							fmt.Println("erro de decodificar saida servidor")
+						}
+						mutexTabelasDeServ.Lock()
+						aux := tabelasDeRoteamentoServidores
+						for i, p := range tabelasDeRoteamentoServidores {
+							if p.IDHost == string(msg.Conteudo) {
+								aux = append(aux[:i], aux[i+1:]...)
+								tabelasDeRoteamentoServidores = append(tabelasDeRoteamentoServidores[:i], tabelasDeRoteamentoServidores[i+1:]...)
+							}
+
+						}
+						mutexTabelasDeServ.Unlock()
 					case "AtualizarListaServer":
 
 						var tabelaAnelAux []HostAnel
@@ -347,6 +382,8 @@ func main() {
 	var err error
 	ipHost, err = getIpHost()
 	errorHandler(err, "Erro ao obter endereço IP da máquina: ", true)
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt)
 
 	if *ipConect == "" { //nesse caso o servidor é da configuração inicial
 		if *ipIndexFile == -1 {
@@ -383,14 +420,22 @@ func main() {
 		// recebe mensagens do anel
 
 	}
-
+	go func() {
+		for sig := range c {
+			fmt.Println(sig.String())
+			fmt.Println("saindo do anel")
+			exitRing()
+			fmt.Println("saiu do anel")
+			os.Exit(0)
+		}
+	}()
 	// Wait forever
 	select {}
 }
 
 func joinRing(ipSuper string) {
 	//conecta solicita conexão super nó
-	buffer := make([]byte, 1024)
+	buffer := make([]byte, 4000)
 
 	conn, err := net.Dial("tcp", ipSuper)
 
@@ -450,6 +495,34 @@ func joinRing(ipSuper string) {
 	msg := newAck(conn.RemoteAddr().String())
 
 	conn.Write(msg.toBytes())
+	//inicializa tabelas
+
+	n, _ = conn.Read(buffer)
+	fmt.Println("recebeu tabela de roteamento: ", string(buffer[:n]))
+	m, _ = splitMensagem(string(buffer[:n]))
+	fmt.Println("Mensagem recebida, do superno: ", m.toString())
+	if m.Tipo == "AtualizarListaSuper" {
+		mutexTabelasDeSupers.Lock()
+
+		err := json.Unmarshal(m.Conteudo, &tabelasDeRoteamentoSupers)
+		if err != nil {
+			fmt.Println("Erro ao converter roteamento:", err)
+		}
+
+		mutexTabelasDeSupers.Unlock()
+	}
+	n, _ = conn.Read(buffer)
+	m, _ = splitMensagem(string(buffer[:n]))
+	if strings.EqualFold(m.Tipo, "AtualizarListaServ") {
+		mutexTabelasDeServ.Lock()
+
+		err := json.Unmarshal(m.Conteudo, &tabelasDeRoteamentoServidores)
+		if err != nil {
+			fmt.Println("Erro ao converter roteamento:", err)
+		}
+
+		mutexTabelasDeServ.Unlock()
+	}
 }
 
 // Conexões diretas com o nó servidor
