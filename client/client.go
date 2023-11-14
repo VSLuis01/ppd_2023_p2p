@@ -229,6 +229,34 @@ func getNextAndPrevAndHostManual(ipList []string, ipIndexFile int) (next string,
 	return
 }
 
+func repassaMsg(msg *Mensagem) {
+	// se não encontrou nenhuma mensagem válida, repassa para o próximo e anterior
+	if msg.IpAtual == ipNextNode {
+		fmt.Println("Repassando mensagem para o nó anterior...")
+		msg.sendPrevNode()
+	} else if msg.IpAtual == ipPrevNode {
+		fmt.Println("Repassando mensagem para o próximo nó...")
+		msg.sendNextNode()
+	} else {
+		// se não encontrou nenhuma mensagem válida, repassa para o próximo e anterior
+		if msg.IpAtual == ipNextNode {
+			fmt.Println("Repassando mensagem para o nó anterior...")
+			msg.sendPrevNode()
+		} else if msg.IpAtual == ipPrevNode {
+			fmt.Println("Repassando mensagem para o próximo nó...")
+			msg.sendNextNode()
+		} else {
+			// repassa pros dois lados
+			fmt.Println("Repassando mensagem para o próximo e anterior nó...")
+			cMsg := msg.copy()
+			cMsg.sendNextNode()
+
+			cMsg = msg.copy()
+			cMsg.sendPrevNode()
+		}
+	}
+}
+
 // Receber conexoes da rede em anel
 func receiveMessageAnelListening() {
 	tcpAddrIpHost, err := net.ResolveTCPAddr("tcp", ipHost)
@@ -286,28 +314,20 @@ func receiveMessageAnelListening() {
 				} else {
 					switch msg.Tipo {
 					case "findServidor":
-						if msg.IpAtual == ipNextNode {
-							findServidorNext = msg
-						} else if msg.IpAtual == ipPrevNode {
-							findServidorPrev = msg
-						}
-					default:
-						// se não encontrou nenhuma mensagem válida, repassa para o próximo e anterior
-						if msg.IpAtual == ipNextNode {
-							fmt.Println("Repassando mensagem para o nó anterior...")
-							msg.sendPrevNode()
-						} else if msg.IpAtual == ipPrevNode {
-							fmt.Println("Repassando mensagem para o próximo nó...")
-							msg.sendNextNode()
+						if msg.IpDestino == ipHost {
+							if msg.IpAtual == ipNextNode {
+								findServidorNext = msg
+							} else if msg.IpAtual == ipPrevNode {
+								findServidorPrev = msg
+							}
 						} else {
-							// repassa pros dois lados
-							fmt.Println("Repassando mensagem para o próximo e anterior nó...")
-							cMsg := msg.copy()
-							cMsg.sendNextNode()
-
-							cMsg = msg.copy()
-							cMsg.sendPrevNode()
+							repassaMsg(msg)
 						}
+
+					case "downloadFile":
+						// envia o arquivo direto para o nó que requisitou
+					default:
+						repassaMsg(msg)
 					}
 				}
 
@@ -496,7 +516,7 @@ func handleOpcoes(opcao int) {
 		var arquivo string
 
 		for {
-			fmt.Println("Arquivos disponíveis: ")
+			fmt.Println("Arquivos disponíveis para upload: ")
 			for i, file := range arquivosDiretorio {
 				fmt.Printf("\t%d - %s\n", i+1, file)
 			}
@@ -545,9 +565,68 @@ func handleOpcoes(opcao int) {
 		}
 
 	case 2:
-		fmt.Println("Download arquivo")
+		fmt.Println()
+		var arquivo string
 
-	//	downloadFile
+		fmt.Print("Nome do arquivo: ")
+		fmt.Scan(&arquivo)
+
+		msg := newMensagem("downloadFile", ipHost, connServidor.RemoteAddr().String(), []byte(arquivo), ipHost, 0)
+
+		connServidor.Write(msg.toBytes())
+
+		// aguarda ack
+		msgLen, err := connServidor.Read(buffer)
+
+		if err != nil {
+			// Verifique se o erro é devido ao prazo expirado
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				fmt.Println("Tempo limite expirado. Problema com o servidor de arquivos.")
+			} else {
+				// Outro erro, imprima ou trate conforme necessário
+				fmt.Println("Erro ao receber respostas da requisição:", err)
+			}
+			return
+		}
+
+		buffer = buffer[:msgLen]
+
+		msg, err = splitMensagem(string(buffer))
+		errorHandler(err, "", false)
+
+		if err == nil {
+			if msg.Tipo == "MultiplePeers" {
+				fmt.Println("Arquivo detectado em multiplos peers. Selecione um: ")
+				peers := strings.Split(string(msg.Conteudo), "/")
+
+				for i, peer := range peers {
+					fmt.Printf("\t%d - %s\n", i+1, peer)
+				}
+
+				for {
+					var opcao int
+					fmt.Print("Opção: ")
+					fmt.Scan(&opcao)
+
+					if opcao >= 1 && opcao <= len(peers) {
+						// abre conexão direta com o peer
+						fmt.Println("Conectando com o peer ", peers[opcao-1], "...")
+					} else {
+						fmt.Printf("Opção inválida!\n\n")
+					}
+				}
+
+			} else if msg.Tipo == "UniquePeer" {
+				fmt.Println("Arquivo detectado em um único peer. Conectando com o peer ", string(msg.Conteudo), "...")
+
+			} else if msg.Tipo == "AnotherNetworkPeer" {
+				fmt.Println("Arquivo detectado em outra rede. Conectando com o peer ", string(msg.Conteudo), "...")
+			} else {
+				fmt.Println(msg.Tipo + ": " + string(msg.Conteudo))
+				fmt.Println()
+			}
+		}
+
 	case 3:
 		fmt.Println()
 		msg := newMensagem("listFiles", ipHost, connServidor.RemoteAddr().String(), []byte(""), ipHost, 0)
@@ -589,6 +668,7 @@ func handleOpcoes(opcao int) {
 					for _, tabelaArquivo := range tabelaArquivos {
 						if lastPeer != tabelaArquivo.Cliente.IPHost && peerFlag {
 							peerFlag = false
+							fmt.Println()
 						}
 
 						if !peerFlag {

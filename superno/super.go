@@ -523,6 +523,34 @@ func handleServidorArquivos(msg *Mensagem) *Mensagem {
 
 }
 
+func repassaMsg(msg *Mensagem) {
+	// se não encontrou nenhuma mensagem válida, repassa para o próximo e anterior
+	if msg.IpAtual == ipNextNode {
+		fmt.Println("Repassando mensagem para o nó anterior...")
+		msg.sendPrevNode()
+	} else if msg.IpAtual == ipPrevNode {
+		fmt.Println("Repassando mensagem para o próximo nó...")
+		msg.sendNextNode()
+	} else {
+		// se não encontrou nenhuma mensagem válida, repassa para o próximo e anterior
+		if msg.IpAtual == ipNextNode {
+			fmt.Println("Repassando mensagem para o nó anterior...")
+			msg.sendPrevNode()
+		} else if msg.IpAtual == ipPrevNode {
+			fmt.Println("Repassando mensagem para o próximo nó...")
+			msg.sendNextNode()
+		} else {
+			// repassa pros dois lados
+			fmt.Println("Repassando mensagem para o próximo e anterior nó...")
+			cMsg := msg.copy()
+			cMsg.sendNextNode()
+
+			cMsg = msg.copy()
+			cMsg.sendPrevNode()
+		}
+	}
+}
+
 // Receber conexoes da rede em anel
 func receiveMessageAnelListening() {
 	//tcpAddrIpHost, err := net.ResolveTCPAddr("tcp", ipHost)
@@ -711,22 +739,7 @@ func receiveMessageAnelListening() {
 							conn.Write(newMensagem("NotFound", ipHost, conn.RemoteAddr().String(), []byte("Servidor de arquivos não encontrado"), ipHost, 0).toBytes())
 						}
 					default:
-						// se não encontrou nenhuma mensagem válida, repassa para o próximo e anterior
-						if msg.IpAtual == ipNextNode {
-							fmt.Println("Repassando mensagem para o nó anterior...")
-							msg.sendPrevNode()
-						} else if msg.IpAtual == ipPrevNode {
-							fmt.Println("Repassando mensagem para o próximo nó...")
-							msg.sendNextNode()
-						} else {
-							// repassa pros dois lados
-							fmt.Println("Repassando mensagem para o próximo e anterior nó...")
-							cMsg := msg.copy()
-							cMsg.sendNextNode()
-
-							cMsg = msg.copy()
-							cMsg.sendPrevNode()
-						}
+						repassaMsg(msg)
 					}
 				}
 

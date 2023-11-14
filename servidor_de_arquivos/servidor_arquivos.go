@@ -225,7 +225,29 @@ func handleTcpMessages(conn net.Conn) {
 				fmt.Printf("%s - %s: %s\n", tabelaArquivo.Cliente.IDHost, tabelaArquivo.Cliente.IPHost, tabelaArquivo.NomeArquivo)
 			}
 		case "downloadFile":
-			fmt.Println("Enviando arquivo: ", string(msg.Conteudo))
+			// envia o ip de quem possui o arquivo
+			var peersFiles []string
+
+			for _, tabelaArquivo := range tabelaArquivos {
+				if tabelaArquivo.NomeArquivo == string(msg.Conteudo) {
+					peersFiles = append(peersFiles, tabelaArquivo.Cliente.IPHost)
+				}
+			}
+
+			var nMsg *Mensagem
+
+			if len(peersFiles) == 0 {
+				// procura em outra rede
+			} else if len(peersFiles) == 1 {
+				nMsg = newMensagem("UniquePeer", ipHost, msg.IpOrigem, []byte(peersFiles[0]), ipHost, 0)
+			} else {
+				bytesPeers := []byte(strings.Join(peersFiles, "/"))
+
+				nMsg = newMensagem("MultiplePeers", ipHost, msg.IpOrigem, bytesPeers, ipHost, 0)
+			}
+
+			conn.Write(nMsg.toBytes())
+
 		case "listFiles":
 			fmt.Println("Listando arquivos: ", string(msg.Conteudo))
 
