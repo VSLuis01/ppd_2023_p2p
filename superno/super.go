@@ -584,18 +584,28 @@ func receiveMessageAnelListening() {
 						buffer = buffer[:n]
 						msg, _ = splitMensagem(string(buffer))
 						if msg.Tipo == "ack" {
+							ipPrevNode = myp.IPHost
+							connectPrevNode()
 							fmt.Println("ACK recebido")
 							byteTabelaSupers, _ := json.Marshal(tabelaRoteamentoSuperNos)
-							mensa := newMensagem("AtualizarListaSuper", ipHost, conn.RemoteAddr().String(), byteTabelaSupers, ipHost, 0)
+							time.Sleep(1 * time.Second)
+							mensa := newMensagem("InitListSuper", ipHost, myp.IPHost, byteTabelaSupers, ipHost, 0)
 							fmt.Println("enviando: ", mensa.toString())
-							conn.Write(mensa.toBytes())
+							mensa.sendPrevNode()
+							fmt.Println("enviou ", n)
+							if err != nil {
+								fmt.Println("erro ao enviar:", err)
+							}
 							time.Sleep(2 * time.Second)
 							byteTabelaServ, _ := json.Marshal(tabelaRoteamentoSuperNos)
 
-							conn.Write(newMensagem("AtualizarListaServ", ipHost, conn.RemoteAddr().String(), byteTabelaServ, ipHost, 0).toBytes())
+							mensa = newMensagem("InitListServ", ipHost, myp.IPHost, byteTabelaServ, ipHost, 0)
+							mensa.sendPrevNode()
 							time.Sleep(2 * time.Second)
-							ipPrevNode = conn.RemoteAddr().String()
-							byteTabelaServidores, _ := json.Marshal(myp)
+
+							var ServEnvio []HostAnel
+							ServEnvio = append(ServEnvio, myp)
+							byteTabelaServidores, _ := json.Marshal(ServEnvio)
 							fmt.Println(tabelasDeRoteamentoServidores)
 							for _, p := range tabelasDeRoteamentoServidores {
 								fmt.Println("Enviando tabela para: ", p.IPHost)
@@ -691,10 +701,14 @@ func receiveMessageAnelListening() {
 						fmt.Println("Tabela de servidores atualizada: ", aux)
 
 					case "AtualizaProximo":
+						closeNextNode()
 						ipNextNode = string(msg.Conteudo)
+						connectNextNode()
 						conn.Write(newAck(conn.RemoteAddr().String()).toBytes())
 					case "AtualizaAnt":
+						closePrevNode()
 						ipPrevNode = string(msg.Conteudo)
+						connectPrevNode()
 						conn.Write(newAck(conn.RemoteAddr().String()).toBytes())
 					default:
 						fmt.Println("mensagem invalida")

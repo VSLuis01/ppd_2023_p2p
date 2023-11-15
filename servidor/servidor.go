@@ -75,6 +75,7 @@ func (m *Mensagem) toString() string {
 func exitRing() {
 
 	//informa um superno
+	fmt.Println(tabelasDeRoteamentoSupers)
 	destino := tabelasDeRoteamentoSupers[0].IPHost
 
 	m := newMensagem("ServidorSairAnel", ipHost, destino, []byte(privateKey), ipHost, 0)
@@ -227,9 +228,37 @@ func receiveMessageAnelListening() {
 					}
 				} else {
 					switch msg.Tipo {
-					case "AtualizaProximo":
-						ipNextNode = string(msg.Conteudo)
 
+					case "InitListSuper":
+						fmt.Println("Mensagem recebida, do superno: ", msg.toString())
+
+						mutexTabelasDeSupers.Lock()
+
+						err := json.Unmarshal(msg.Conteudo, &tabelasDeRoteamentoSupers)
+						if err != nil {
+							fmt.Println("Erro ao converter roteamento:", err)
+						}
+
+						mutexTabelasDeSupers.Unlock()
+
+					case "InitListServ":
+						mutexTabelasDeServ.Lock()
+						err := json.Unmarshal(msg.Conteudo, &tabelasDeRoteamentoServidores)
+						if err != nil {
+							fmt.Println("Erro ao converter roteamento:", err)
+						}
+
+						mutexTabelasDeServ.Unlock()
+
+					case "AtualizaProximo":
+						closeNextNode()
+						ipNextNode = string(msg.Conteudo)
+						connectNextNode()
+						conn.Write(newAck(conn.RemoteAddr().String()).toBytes())
+					case "AtualizaAnt":
+						closePrevNode()
+						ipPrevNode = string(msg.Conteudo)
+						connectPrevNode()
 						conn.Write(newAck(conn.RemoteAddr().String()).toBytes())
 					case "AtualizarListaServerSaida":
 						var tabelaAnelAux []HostAnel
@@ -497,32 +526,6 @@ func joinRing(ipSuper string) {
 	conn.Write(msg.toBytes())
 	//inicializa tabelas
 
-	n, _ = conn.Read(buffer)
-	fmt.Println("recebeu tabela de roteamento: ", string(buffer[:n]))
-	m, _ = splitMensagem(string(buffer[:n]))
-	fmt.Println("Mensagem recebida, do superno: ", m.toString())
-	if m.Tipo == "AtualizarListaSuper" {
-		mutexTabelasDeSupers.Lock()
-
-		err := json.Unmarshal(m.Conteudo, &tabelasDeRoteamentoSupers)
-		if err != nil {
-			fmt.Println("Erro ao converter roteamento:", err)
-		}
-
-		mutexTabelasDeSupers.Unlock()
-	}
-	n, _ = conn.Read(buffer)
-	m, _ = splitMensagem(string(buffer[:n]))
-	if strings.EqualFold(m.Tipo, "AtualizarListaServ") {
-		mutexTabelasDeServ.Lock()
-
-		err := json.Unmarshal(m.Conteudo, &tabelasDeRoteamentoServidores)
-		if err != nil {
-			fmt.Println("Erro ao converter roteamento:", err)
-		}
-
-		mutexTabelasDeServ.Unlock()
-	}
 }
 
 // Conexões diretas com o nó servidor

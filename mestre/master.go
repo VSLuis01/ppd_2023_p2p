@@ -314,7 +314,14 @@ func receiveMessageAnelListening() {
 						tabelasDeRoteamentoServidores = append(tabelasDeRoteamentoServidores, tabelaAnelAux2...)
 						mutexTabelasDeServ.Unlock()
 					case "AtualizaProximo":
+						closeNextNode()
 						ipNextNode = string(msg.Conteudo)
+						connectNextNode()
+						conn.Write(newAck(conn.RemoteAddr().String()).toBytes())
+					case "AtualizaAnt":
+						closePrevNode()
+						ipPrevNode = string(msg.Conteudo)
+						connectPrevNode()
 						conn.Write(newAck(conn.RemoteAddr().String()).toBytes())
 					default:
 						fmt.Println("mensagem invalida")
@@ -415,7 +422,7 @@ func init() {
 func main() {
 	// definindo a porta do nó mestre
 	ipIndexFile := flag.Int("fi", -1, "Indice o arquivo de ips")
-	portaInicial := flag.String("p", "8080", "Porta inicial do nó mestre")
+	portaInicial := flag.String("p", "45661", "Porta inicial do nó mestre")
 	flag.Parse()
 
 	listIp := openFileAndGetIps("../ips")
