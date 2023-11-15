@@ -472,9 +472,11 @@ func main() {
 
 	ipIndexFile := flag.Int("fi", -1, "Indice o arquivo de ips")
 	//portaCliente := flag.String("p", "9980", "Porta do cliente")
+
+	ipFile := flag.String("f", "ips", "Arquivo de ips")
 	flag.Parse()
 
-	listIp := openFileAndGetIps("../ips")
+	listIp := openFileAndGetIps("../" + *ipFile)
 
 	var err error
 	///baseado no arquivo, encontra o ipatual e define proximo e anterior
@@ -502,8 +504,8 @@ func menu() {
 		fmt.Println("1 - Upload arquivo")
 		fmt.Println("2 - Download arquivo")
 		fmt.Println("3 - Listar arquivos")
-		fmt.Println("4 - Buscar arquivo")
-		fmt.Println("5 - Sair")
+		fmt.Println("4 - Remover arquivo")
+		fmt.Println("0 - Sair")
 		fmt.Print("Opção: ")
 		var opcao int
 		fmt.Scan(&opcao)
@@ -589,6 +591,7 @@ func handleOpcoes(opcao int) {
 			for i, file := range arquivosSeedering {
 				fmt.Printf("\t%d - %s (seeding)\n", i+1+len(arquivosDiretorio), file)
 			}
+			fmt.Printf("\t0 - Voltar\n")
 
 			fmt.Println()
 
@@ -601,6 +604,8 @@ func handleOpcoes(opcao int) {
 				break
 			} else if opcao >= len(arquivosDiretorio)+1 && opcao <= len(arquivosDiretorio)+len(arquivosSeedering) {
 				fmt.Println("O arquivo já foi enviado para o servidor de arquivos!")
+			} else if opcao == 0 {
+				return
 			} else {
 				fmt.Printf("Opção inválida!\n\n")
 			}
@@ -813,11 +818,71 @@ func handleOpcoes(opcao int) {
 			}
 		}
 	case 4:
-		fmt.Println("Buscar arquivo")
+		arquivosSeedering := getFilesWithExtensionsInDir("./seeders/" + ipHost)
 
-		//findFile
-	case 5:
+		var arquivo string
+
+		for {
+			fmt.Println("Arquivos disponíveis para remover: ")
+			for i, file := range arquivosSeedering {
+				fmt.Printf("\t%d - %s\n", i+1, file)
+			}
+			fmt.Printf("\t0 - Voltar\n")
+
+			fmt.Println()
+
+			var opcao int
+			fmt.Print("Opção: ")
+			fmt.Scan(&opcao)
+
+			if opcao >= 1 && opcao <= len(arquivosSeedering) {
+				arquivo = arquivosSeedering[opcao-1]
+				break
+			} else if opcao == 0 {
+				return
+			} else {
+				fmt.Printf("Opção inválida!\n\n")
+			}
+		}
+
+		msg := newMensagem("removeFile", ipHost, connServidor.RemoteAddr().String(), []byte(privateKey+"/"+arquivo), ipHost, 0)
+
+		connServidor.Write(msg.toBytes())
+
+		msgLen, err := connServidor.Read(buffer)
+
+		if err != nil {
+			// Verifique se o erro é devido ao prazo expirado
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				fmt.Println("Tempo limite expirado. Problema com o servidor de arquivos.")
+			} else {
+				// Outro erro, imprima ou trate conforme necessário
+				fmt.Println("Erro ao receber respostas da requisição:", err)
+			}
+			return
+		}
+
+		buffer = buffer[:msgLen]
+
+		msg, err = splitMensagem(string(buffer))
+		errorHandler(err, "", false)
+
+		if err == nil {
+			if msg.Tipo == "ack" {
+				fmt.Println("Arquivo removido com sucesso!")
+
+				filePath := fmt.Sprintf("./seeders/%s/%s", ipHost, arquivo)
+
+				err = deleteFileFromFolder(filePath)
+			} else {
+				fmt.Println("Erro ao enviar arquivo!")
+			}
+		}
+	case 0:
 		fmt.Println("Sair")
+
+	default:
+		fmt.Println("Opção inválida!")
 	}
 
 }
@@ -875,4 +940,14 @@ func createFolderIfNotExists(folderName string) (string, error) {
 	}
 
 	return folderPath, nil
+}
+
+func deleteFileFromFolder(filePath string) error {
+	err := os.Remove(filePath)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("Arquivo", filePath, "do IPHost", ipHost, "removido com sucesso.")
+	return nil
 }

@@ -319,7 +319,7 @@ func receiveMessageAnelListening() {
 						}
 						tabelasDeRoteamentoServidores = append(tabelasDeRoteamentoServidores, tabelaAnelAux2...)
 						mutexTabelasDeServ.Unlock()
-					case "uploadFile", "downloadFile", "listFiles", "findFile":
+					case "uploadFile", "downloadFile", "listFiles", "removeFile":
 						var wg sync.WaitGroup
 						newMsg := make(chan *Mensagem, 2)
 
@@ -469,9 +469,10 @@ func main() {
 	portaSuperNo := flag.String("ps", "8001", "Porta do super nó")
 	ipConect := flag.String("c", "", "<ip>:<porta> de um superno. ")
 	portaInicial := flag.String("p", "40503", "Porta inicial do nó mestre")
+	ipFile := flag.String("f", "ips", "Arquivo de ips")
 	flag.Parse()
 
-	listIp := openFileAndGetIps("../ips")
+	listIp := openFileAndGetIps("../" + *ipFile)
 
 	///baseado no arquivo, encontra o ipatual e define proximo e anterior
 	var err error

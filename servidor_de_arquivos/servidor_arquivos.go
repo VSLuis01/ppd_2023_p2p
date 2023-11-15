@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -84,6 +85,22 @@ func errorHandler(err error, msg string, fatal bool) {
 			log.Println(msg, err)
 		}
 	}
+}
+
+func ordenarArquivosPorIP() {
+	sort.SliceStable(tabelaArquivos, func(i, j int) bool {
+		return tabelaArquivos[i].Cliente.IDHost < tabelaArquivos[j].Cliente.IDHost
+	})
+}
+
+func removeElemento(nomeArquivo, idHost string) bool {
+	for i, arquivo := range tabelaArquivos {
+		if arquivo.NomeArquivo == nomeArquivo && arquivo.Cliente.IDHost == idHost {
+			tabelaArquivos = append(tabelaArquivos[:i], tabelaArquivos[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 func openFileAndGetIps(filename string) []string {
@@ -167,10 +184,11 @@ func getIpHost() (string, error) {
 }
 
 func main() {
-	portaServidorArquivos := flag.String("p", "9090", "Porta do servidor de arquivos")
+	portaServidorArquivos := flag.String("p", "7070", "Porta do servidor de arquivos")
+	ipFile := flag.String("f", "ips", "Arquivo de ips")
 	flag.Parse()
 
-	listIp := openFileAndGetIps("../ips")
+	listIp := openFileAndGetIps("../" + *ipFile)
 
 	ipHost, _ = getIpHost()
 
@@ -219,6 +237,8 @@ func handleTcpMessages(conn net.Conn) {
 
 			tabelaArquivos = append(tabelaArquivos, Arquivos{arquivo[1], hostAnel})
 
+			ordenarArquivosPorIP()
+
 			conn.Write(newAck(msg.IpOrigem).toBytes())
 
 			for _, tabelaArquivo := range tabelaArquivos {
@@ -264,8 +284,23 @@ func handleTcpMessages(conn net.Conn) {
 
 			conn.Write(nMsg.toBytes())
 
-		case "findFile":
+		case "removeFile":
 			fmt.Println("Buscando arquivo: ", string(msg.Conteudo))
+
+			idAndFileName := strings.Split(string(msg.Conteudo), "/")
+
+			isRemoved := removeElemento(idAndFileName[1], idAndFileName[0])
+
+			var nMsg *Mensagem
+
+			if isRemoved {
+				nMsg = newMensagem("ack", ipHost, msg.IpOrigem, []byte("Arquivo removido com sucesso"), ipHost, 0)
+			} else {
+				nMsg = newMensagem("NoFiles", ipHost, msg.IpOrigem, []byte("Nenhum arquivo encontrado"), ipHost, 0)
+			}
+
+			conn.Write(nMsg.toBytes())
+
 		}
 
 	}

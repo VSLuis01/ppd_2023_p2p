@@ -353,9 +353,11 @@ func main() {
 
 	// porta utilizada para os servidores se conectarem
 	portForServers := flag.String("p", "8001", "Porta destino")
+
+	ipFile := flag.String("f", "ips", "Arquivo de ips")
 	flag.Parse()
 
-	listIp := openFileAndGetIps("../ips")
+	listIp := openFileAndGetIps("../" + *ipFile)
 
 	var err error
 	///baseado no arquivo, encontra o ipatual e define proximo e anterior
@@ -729,7 +731,7 @@ func receiveMessageAnelListening() {
 							errorHandler(err, "Erro ao conectar com o servidor de arquivos: ", false)
 						}
 
-					case "uploadFile", "downloadFile", "listFiles", "findFile":
+					case "uploadFile", "downloadFile", "listFiles", "removeFile":
 						fmt.Println("Enviando requisição para o servidor de arquivos...")
 
 						var nMsg *Mensagem = nil
