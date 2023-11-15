@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/sha1"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -81,17 +83,17 @@ func (m *Mensagem) toBytes() []byte {
 }
 
 func closeNextNode() {
-	if connNextNode != nil {
-		err := connNextNode.Close()
-		errorHandler(err, "Erro ao fechar conexão com o próximo nó: ", false)
-	}
+	err := connNextNode.Close()
+	errorHandler(err, "Erro ao fechar conexão com o próximo nó: ", false)
+
+	connNextNode = nil
 }
 
 func closePrevNode() {
-	if connPrevNode != nil {
-		err := connPrevNode.Close()
-		errorHandler(err, "Erro ao fechar conexão com o anterior nó: ", false)
-	}
+	err := connPrevNode.Close()
+	errorHandler(err, "Erro ao fechar conexão com o anterior nó: ", false)
+
+	connPrevNode = nil
 }
 
 func connectNextNode() net.Conn {
@@ -128,7 +130,13 @@ func (m *Mensagem) sendNextNode() {
 		m.JumpsCount++
 
 		_, err = connNextNode.Write(m.toBytes())
-		errorHandler(err, "Erro ao enviar mensagem para o próximo nó: ", false)
+
+		if err != nil && errors.Is(err, syscall.EPIPE) {
+			fmt.Println("Erro ao enviar mensagem para o próximo nó. Tentando novamente...")
+			closeNextNode()
+			time.Sleep(150 * time.Millisecond)
+			m.sendNextNode()
+		}
 	}
 }
 
@@ -142,7 +150,13 @@ func (m *Mensagem) sendPrevNode() {
 		m.JumpsCount++
 
 		_, err := connPrevNode.Write(m.toBytes())
-		errorHandler(err, "Erro ao enviar mensagem para o anterior nó: ", false)
+
+		if err != nil && errors.Is(err, syscall.EPIPE) {
+			fmt.Println("Erro ao enviar mensagem para o anterior nó. Tentando novamente...")
+			closePrevNode()
+			time.Sleep(150 * time.Millisecond)
+			m.sendPrevNode()
+		}
 	}
 }
 
@@ -213,22 +227,17 @@ func handleClientRequisicao(connSuper net.Conn, super HostAnel, msg *Mensagem, n
 func repassaMsg(msg *Mensagem) {
 	// se não encontrou nenhuma mensagem válida, repassa para o próximo e anterior
 	if msg.IpAtual == ipNextNode {
-		fmt.Println("Repassando mensagem para o nó anterior...")
 		msg.sendPrevNode()
 	} else if msg.IpAtual == ipPrevNode {
-		fmt.Println("Repassando mensagem para o próximo nó...")
 		msg.sendNextNode()
 	} else {
 		// se não encontrou nenhuma mensagem válida, repassa para o próximo e anterior
 		if msg.IpAtual == ipNextNode {
-			fmt.Println("Repassando mensagem para o nó anterior...")
 			msg.sendPrevNode()
 		} else if msg.IpAtual == ipPrevNode {
-			fmt.Println("Repassando mensagem para o próximo nó...")
 			msg.sendNextNode()
 		} else {
 			// repassa pros dois lados
-			fmt.Println("Repassando mensagem para o próximo e anterior nó...")
 			cMsg := msg.copy()
 			cMsg.sendNextNode()
 
@@ -325,7 +334,7 @@ func receiveMessageAnelListening() {
 								go handleClientRequisicao(connSuper, super, msg, newMsg, &wg)
 							}
 
-							time.Sleep(750 * time.Millisecond)
+							time.Sleep(300 * time.Millisecond)
 						}
 
 						// Goroutine para esperar todas as goroutines concluírem
@@ -337,6 +346,8 @@ func receiveMessageAnelListening() {
 						// Recebe todas as mensagens do canal
 						for msg := range newMsg {
 							if msg.Tipo != "NotFound" {
+								fmt.Println("Retornando requisição do cliente....")
+
 								msg.IpDestino = conn.RemoteAddr().String()
 								conn.Write(msg.toBytes())
 							} else {
@@ -345,12 +356,11 @@ func receiveMessageAnelListening() {
 						}
 
 					case "findServidor":
-						fmt.Println("Enviando IP para cliente", msg.IpOrigem, " jumps: ", msg.JumpsCount)
 						quantJumps := strconv.Itoa(msg.JumpsCount)
 
 						newMsg := newMensagem("findServidor", ipHost, msg.IpOrigem, []byte(ipHost+"/"+quantJumps), ipHost, 0)
 
-						if msg.IpAtual == ipNextNode {
+						if msg.IpAtual == ipPrevNode {
 							newMsg.sendPrevNode()
 						} else {
 							newMsg.sendNextNode()

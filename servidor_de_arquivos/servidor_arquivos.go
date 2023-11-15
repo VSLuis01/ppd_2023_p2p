@@ -238,6 +238,9 @@ func handleTcpMessages(conn net.Conn) {
 
 			if len(peersFiles) == 0 {
 				// procura em outra rede
+
+				nMsg = newMensagem("NoSuchFile", ipHost, msg.IpOrigem, []byte("Arquivo não encontrado na rede anel local"), ipHost, 0)
+
 			} else if len(peersFiles) == 1 {
 				nMsg = newMensagem("UniquePeer", ipHost, msg.IpOrigem, []byte(peersFiles[0]), ipHost, 0)
 			} else {
@@ -249,8 +252,6 @@ func handleTcpMessages(conn net.Conn) {
 			conn.Write(nMsg.toBytes())
 
 		case "listFiles":
-			fmt.Println("Listando arquivos: ", string(msg.Conteudo))
-
 			bytesTabelaArquivos, _ := json.Marshal(tabelaArquivos)
 
 			var nMsg *Mensagem

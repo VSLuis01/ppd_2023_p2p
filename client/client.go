@@ -2,8 +2,11 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha1"
+	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -15,6 +18,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -87,17 +91,17 @@ func (m *Mensagem) toBytes() []byte {
 }
 
 func closeNextNode() {
-	if connNextNode != nil {
-		err := connNextNode.Close()
-		errorHandler(err, "Erro ao fechar conexão com o próximo nó: ", false)
-	}
+	err := connNextNode.Close()
+	errorHandler(err, "Erro ao fechar conexão com o próximo nó: ", false)
+
+	connNextNode = nil
 }
 
 func closePrevNode() {
-	if connPrevNode != nil {
-		err := connPrevNode.Close()
-		errorHandler(err, "Erro ao fechar conexão com o anterior nó: ", false)
-	}
+	err := connPrevNode.Close()
+	errorHandler(err, "Erro ao fechar conexão com o anterior nó: ", false)
+
+	connPrevNode = nil
 }
 
 func connectNextNode() net.Conn {
@@ -134,7 +138,13 @@ func (m *Mensagem) sendNextNode() {
 		m.JumpsCount++
 
 		_, err = connNextNode.Write(m.toBytes())
-		errorHandler(err, "Erro ao enviar mensagem para o próximo nó: ", false)
+
+		if err != nil && errors.Is(err, syscall.EPIPE) {
+			fmt.Println("Erro ao enviar mensagem para o proximo nó. Tentando novamente...")
+			closeNextNode()
+			time.Sleep(150 * time.Millisecond)
+			m.sendNextNode()
+		}
 	}
 }
 
@@ -148,7 +158,13 @@ func (m *Mensagem) sendPrevNode() {
 		m.JumpsCount++
 
 		_, err := connPrevNode.Write(m.toBytes())
-		errorHandler(err, "Erro ao enviar mensagem para o anterior nó: ", false)
+
+		if err != nil && errors.Is(err, syscall.EPIPE) {
+			fmt.Println("Erro ao enviar mensagem para o anterior nó. Tentando novamente...")
+			closePrevNode()
+			time.Sleep(150 * time.Millisecond)
+			m.sendPrevNode()
+		}
 	}
 }
 
@@ -232,28 +248,53 @@ func getNextAndPrevAndHostManual(ipList []string, ipIndexFile int) (next string,
 func repassaMsg(msg *Mensagem) {
 	// se não encontrou nenhuma mensagem válida, repassa para o próximo e anterior
 	if msg.IpAtual == ipNextNode {
-		fmt.Println("Repassando mensagem para o nó anterior...")
 		msg.sendPrevNode()
 	} else if msg.IpAtual == ipPrevNode {
-		fmt.Println("Repassando mensagem para o próximo nó...")
 		msg.sendNextNode()
 	} else {
 		// se não encontrou nenhuma mensagem válida, repassa para o próximo e anterior
 		if msg.IpAtual == ipNextNode {
-			fmt.Println("Repassando mensagem para o nó anterior...")
 			msg.sendPrevNode()
 		} else if msg.IpAtual == ipPrevNode {
-			fmt.Println("Repassando mensagem para o próximo nó...")
 			msg.sendNextNode()
 		} else {
 			// repassa pros dois lados
-			fmt.Println("Repassando mensagem para o próximo e anterior nó...")
 			cMsg := msg.copy()
 			cMsg.sendNextNode()
 
 			cMsg = msg.copy()
 			cMsg.sendPrevNode()
 		}
+	}
+}
+
+func streamFile(conn net.Conn, filename string) {
+	file, err := os.Open(filename)
+	if err != nil {
+		fmt.Println("Erro ao abrir o arquivo:", err)
+		return
+	}
+	defer file.Close()
+
+	// Obtém o tamanho do arquivo
+	fileInfo, err := file.Stat()
+	if err != nil {
+		fmt.Println("Erro ao obter informações do arquivo:", err)
+		return
+	}
+	fileSize := fileInfo.Size()
+
+	fmt.Println("Enviando tamanho do arquivo...")
+	binary.Write(conn, binary.LittleEndian, fileSize)
+
+	time.Sleep(1 * time.Second)
+
+	fmt.Println("Enviado bytes do arquivo...")
+	n, err := io.CopyN(conn, file, fileSize)
+	errorHandler(err, "Erro ao enviar arquivo:", false)
+
+	if err == nil {
+		fmt.Printf("Enviado %d bytes\n", n)
 	}
 }
 
@@ -325,7 +366,7 @@ func receiveMessageAnelListening() {
 						}
 
 					case "downloadFile":
-						// envia o arquivo direto para o nó que requisitou
+						streamFile(conn, string(msg.Conteudo))
 					default:
 						repassaMsg(msg)
 					}
@@ -372,10 +413,10 @@ func getIpHost() (string, error) {
 	return "", fmt.Errorf("não foi possível obter o endereço IP da máquina")
 }
 
-func getFilesWithExtensionsInDir() []string {
+func getFilesWithExtensionsInDir(dirPath string) []string {
 	var files []string
 
-	dir, err := os.Open("./")
+	dir, err := os.Open(dirPath)
 	if err != nil {
 		fmt.Println("Erro ao abrir diretório:", err)
 		return files
@@ -406,12 +447,24 @@ func hasExtension(filename string) bool {
 	return ext != ""
 }
 
+func deleteFolder(folderPath string) error {
+	err := os.RemoveAll(folderPath)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func init() {
 	rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	cmd := exec.Command("clear") //Linux example, its tested
 	cmd.Stdout = os.Stdout
 	cmd.Run()
+
+	deleteFolder("downloads")
+	deleteFolder("seeders")
 }
 
 func main() {
@@ -502,7 +555,7 @@ func handleOpcoes(opcao int) {
 
 	connServidor := findClosestServidor()
 
-	err := connServidor.SetReadDeadline(time.Now().Add(5 * time.Second))
+	err := connServidor.SetReadDeadline(time.Now().Add(20 * time.Second))
 	if err != nil {
 		fmt.Println("Erro ao definir prazo de leitura:", err)
 		return
@@ -511,7 +564,19 @@ func handleOpcoes(opcao int) {
 	defer connServidor.Close()
 	switch opcao {
 	case 1:
-		arquivosDiretorio := getFilesWithExtensionsInDir()
+		arquivosDiretorio := getFilesWithExtensionsInDir("./")
+
+		arquivosSeedering := getFilesWithExtensionsInDir("./seeders/" + ipHost)
+
+		//excluir arquivos que já estão sendo seedados
+		for _, arquivoSeedering := range arquivosSeedering {
+			for i, arquivoDiretorio := range arquivosDiretorio {
+				if arquivoSeedering == arquivoDiretorio {
+					arquivosDiretorio = append(arquivosDiretorio[:i], arquivosDiretorio[i+1:]...)
+					break
+				}
+			}
+		}
 
 		var arquivo string
 
@@ -520,6 +585,11 @@ func handleOpcoes(opcao int) {
 			for i, file := range arquivosDiretorio {
 				fmt.Printf("\t%d - %s\n", i+1, file)
 			}
+
+			for i, file := range arquivosSeedering {
+				fmt.Printf("\t%d - %s (seeding)\n", i+1+len(arquivosDiretorio), file)
+			}
+
 			fmt.Println()
 
 			var opcao int
@@ -529,6 +599,8 @@ func handleOpcoes(opcao int) {
 			if opcao >= 1 && opcao <= len(arquivosDiretorio) {
 				arquivo = arquivosDiretorio[opcao-1]
 				break
+			} else if opcao >= len(arquivosDiretorio)+1 && opcao <= len(arquivosDiretorio)+len(arquivosSeedering) {
+				fmt.Println("O arquivo já foi enviado para o servidor de arquivos!")
 			} else {
 				fmt.Printf("Opção inválida!\n\n")
 			}
@@ -559,6 +631,12 @@ func handleOpcoes(opcao int) {
 		if err == nil {
 			if msg.Tipo == "ack" {
 				fmt.Println("Arquivo enviado com sucesso!")
+
+				folderPath, err := createFolderIfNotExists("seeders")
+				errorHandler(err, "Erro ao criar diretório de seeders: ", false)
+
+				bytesToFile([]byte(privateKey), folderPath, arquivo)
+
 			} else {
 				fmt.Println("Erro ao enviar arquivo!")
 			}
@@ -570,6 +648,8 @@ func handleOpcoes(opcao int) {
 
 		fmt.Print("Nome do arquivo: ")
 		fmt.Scan(&arquivo)
+
+		arquivo = strings.TrimSpace(arquivo)
 
 		msg := newMensagem("downloadFile", ipHost, connServidor.RemoteAddr().String(), []byte(arquivo), ipHost, 0)
 
@@ -595,6 +675,12 @@ func handleOpcoes(opcao int) {
 		errorHandler(err, "", false)
 
 		if err == nil {
+			var clientPeer string
+
+			var arq []byte = nil
+
+			var tamArq int64
+
 			if msg.Tipo == "MultiplePeers" {
 				fmt.Println("Arquivo detectado em multiplos peers. Selecione um: ")
 				peers := strings.Split(string(msg.Conteudo), "/")
@@ -603,27 +689,68 @@ func handleOpcoes(opcao int) {
 					fmt.Printf("\t%d - %s\n", i+1, peer)
 				}
 
+				var opcao int
+
 				for {
-					var opcao int
 					fmt.Print("Opção: ")
 					fmt.Scan(&opcao)
 
 					if opcao >= 1 && opcao <= len(peers) {
 						// abre conexão direta com o peer
 						fmt.Println("Conectando com o peer ", peers[opcao-1], "...")
+
+						break
+
 					} else {
 						fmt.Printf("Opção inválida!\n\n")
 					}
 				}
 
+				clientPeer = peers[opcao-1]
+
+				connClient, err := net.Dial("tcp", clientPeer)
+				errorHandler(err, "Erro ao conectar com o cliente: ", false)
+
+				defer connClient.Close()
+
+				msgDownload := newMensagem("downloadFile", ipHost, clientPeer, []byte(arquivo), ipHost, 0)
+
+				fmt.Println("Enviando requisição de download...")
+				connClient.Write(msgDownload.toBytes())
+
+				arq, tamArq = receiveFile(connClient)
+
 			} else if msg.Tipo == "UniquePeer" {
 				fmt.Println("Arquivo detectado em um único peer. Conectando com o peer ", string(msg.Conteudo), "...")
+
+				clientPeer := string(msg.Conteudo)
+
+				connClient, err := net.Dial("tcp", clientPeer)
+				errorHandler(err, "Erro ao conectar com o cliente: ", false)
+
+				defer connClient.Close()
+
+				msgDownload := newMensagem("downloadFile", ipHost, clientPeer, []byte(arquivo), ipHost, 0)
+
+				fmt.Println("Enviando requisição de download...")
+				connClient.Write(msgDownload.toBytes())
+
+				arq, tamArq = receiveFile(connClient)
 
 			} else if msg.Tipo == "AnotherNetworkPeer" {
 				fmt.Println("Arquivo detectado em outra rede. Conectando com o peer ", string(msg.Conteudo), "...")
 			} else {
 				fmt.Println(msg.Tipo + ": " + string(msg.Conteudo))
 				fmt.Println()
+			}
+
+			if arq != nil {
+				downloadsPath, err := createFolderIfNotExists("downloads")
+				errorHandler(err, "Erro ao criar diretório de downloads: ", false)
+
+				fmt.Println("Arquivo recebido com sucesso, tamanho: ", tamArq)
+
+				bytesToFile(arq, downloadsPath, arquivo)
 			}
 		}
 
@@ -675,7 +802,7 @@ func handleOpcoes(opcao int) {
 							fmt.Printf("Peer: %s\n", tabelaArquivo.Cliente.IPHost)
 							peerFlag = true
 						}
-						fmt.Printf("\t %s", tabelaArquivo.NomeArquivo)
+						fmt.Printf("\t %s\n", tabelaArquivo.NomeArquivo)
 						lastPeer = tabelaArquivo.Cliente.IPHost
 					}
 					fmt.Printf("\n\n")
@@ -693,4 +820,59 @@ func handleOpcoes(opcao int) {
 		fmt.Println("Sair")
 	}
 
+}
+
+func receiveFile(conn net.Conn) ([]byte, int64) {
+	var size int64
+
+	arquivoBytes := new(bytes.Buffer)
+
+	fmt.Println("Recebendo tamanho do arquivo...")
+	binary.Read(conn, binary.LittleEndian, &size)
+
+	time.Sleep(1 * time.Second)
+
+	fmt.Println("Recebendo bytes do arquivo...")
+	n, err := io.CopyN(arquivoBytes, conn, size)
+	if err != nil {
+		fmt.Println("Erro ao receber arquivo:", err)
+		return nil, 0
+	}
+
+	return arquivoBytes.Bytes(), n
+}
+
+func bytesToFile(data []byte, folderPath, filename string) error {
+	filePath := fmt.Sprintf("%s/%s", folderPath, filename)
+
+	// Cria ou abre um arquivo para escrita
+	file, err := os.Create(filePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	// Escreve os bytes no arquivo
+	_, err = file.Write(data)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("Arquivo criado com sucesso:", filePath)
+	return nil
+}
+
+func createFolderIfNotExists(folderName string) (string, error) {
+	folderPath := fmt.Sprintf("./%s/%s", folderName, ipHost)
+
+	// Verifica se o diretório já existe
+	if _, err := os.Stat(folderPath); os.IsNotExist(err) {
+		// Se não existir, cria o diretório
+		err := os.MkdirAll(folderPath, 0755) // Permissões 0755 para o diretório
+		if err != nil {
+			return "", err
+		}
+	}
+
+	return folderPath, nil
 }
