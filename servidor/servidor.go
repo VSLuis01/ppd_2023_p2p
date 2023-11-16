@@ -200,8 +200,6 @@ func handleClientRequisicao(connSuper net.Conn, super HostAnel, msg *Mensagem, n
 
 	defer connSuper.Close()
 
-	fmt.Println("Repassando requisição do cliente para o super nó: ", super.IPHost)
-
 	msg.IpAtual = ipHost
 	msg.JumpsCount++
 	msg.IpDestino = super.IPHost
@@ -346,7 +344,6 @@ func receiveMessageAnelListening() {
 						// Recebe todas as mensagens do canal
 						for msg := range newMsg {
 							if msg.Tipo != "NotFound" {
-								fmt.Println("Retornando requisição do cliente....")
 
 								msg.IpDestino = conn.RemoteAddr().String()
 								conn.Write(msg.toBytes())
@@ -490,8 +487,6 @@ func main() {
 		// recebe mensagens do anel
 		go receiveMessageAnelListening()
 
-		fmt.Println("Se conectando a um super nó...")
-
 		//por padrao o endereço do superno de configuração inicial é o segundo elemento da lista de ips
 		ipSuperNo, _, _ := net.SplitHostPort(listIp[1])
 
@@ -499,8 +494,6 @@ func main() {
 
 		conn, err := net.Dial("tcp", ipSuperNo)
 		errorHandler(err, "Erro ao conectar ao super nó:", true)
-
-		fmt.Println("Conexão TCP estabelecida com sucesso")
 
 		privateKey = newHashSha1()
 
@@ -591,7 +584,6 @@ func tcpConfigSuperNo(conn net.Conn) {
 
 	_, err := conn.Write(msg.toBytes())
 	errorHandler(err, "Erro ao enviar chave para o super nó: ", false)
-	fmt.Println("Chave enviada para o super nó")
 
 	buffer := make([]byte, 4000)
 	msgLen, err := conn.Read(buffer)
@@ -608,10 +600,7 @@ func tcpConfigSuperNo(conn net.Conn) {
 
 	msg, _ = splitMensagem(string(mensagem))
 
-	fmt.Printf("[%s] Enviou: %s - Tipo > %s\n", conn.RemoteAddr().String(), string(msg.Conteudo), msg.Tipo)
-
 	if strings.EqualFold(msg.Tipo, "ack") {
-		fmt.Println("Chave recebida pelo super nó")
 
 		// Solicita a tabela dos super nós
 		msg = newMensagem("roteamento-supers", ipHost, conn.RemoteAddr().String(), []byte(""), ipHost, 0)

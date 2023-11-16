@@ -680,8 +680,6 @@ func handleOpcoes(opcao int) {
 		errorHandler(err, "", false)
 
 		if err == nil {
-			var clientPeer string
-
 			var arq []byte = nil
 
 			var tamArq int64
@@ -690,50 +688,23 @@ func handleOpcoes(opcao int) {
 				fmt.Println("Arquivo detectado em multiplos peers. Selecione um: ")
 				peers := strings.Split(string(msg.Conteudo), "/")
 
-				for i, peer := range peers {
-					fmt.Printf("\t%d - %s\n", i+1, peer)
+				connClient, clientPeer := multiplePeers(peers)
+
+				if connClient != nil {
+					defer connClient.Close()
+
+					msgDownload := newMensagem("downloadFile", ipHost, clientPeer, []byte(arquivo), ipHost, 0)
+
+					fmt.Println("Enviando requisição de download...")
+					connClient.Write(msgDownload.toBytes())
+
+					arq, tamArq = receiveFile(connClient)
 				}
-
-				var opcao int
-
-				for {
-					fmt.Print("Opção: ")
-					fmt.Scan(&opcao)
-
-					if opcao >= 1 && opcao <= len(peers) {
-						// abre conexão direta com o peer
-						fmt.Println("Conectando com o peer ", peers[opcao-1], "...")
-
-						break
-
-					} else {
-						fmt.Printf("Opção inválida!\n\n")
-					}
-				}
-
-				clientPeer = peers[opcao-1]
-
-				connClient, err := net.Dial("tcp", clientPeer)
-				errorHandler(err, "Erro ao conectar com o cliente: ", false)
-
-				defer connClient.Close()
-
-				msgDownload := newMensagem("downloadFile", ipHost, clientPeer, []byte(arquivo), ipHost, 0)
-
-				fmt.Println("Enviando requisição de download...")
-				connClient.Write(msgDownload.toBytes())
-
-				arq, tamArq = receiveFile(connClient)
 
 			} else if msg.Tipo == "UniquePeer" {
 				fmt.Println("Arquivo detectado em um único peer. Conectando com o peer ", string(msg.Conteudo), "...")
 
-				clientPeer := string(msg.Conteudo)
-
-				connClient, err := net.Dial("tcp", clientPeer)
-				errorHandler(err, "Erro ao conectar com o cliente: ", false)
-
-				defer connClient.Close()
+				connClient, clientPeer := uniquePeer(msg)
 
 				msgDownload := newMensagem("downloadFile", ipHost, clientPeer, []byte(arquivo), ipHost, 0)
 
@@ -743,7 +714,39 @@ func handleOpcoes(opcao int) {
 				arq, tamArq = receiveFile(connClient)
 
 			} else if msg.Tipo == "AnotherNetworkPeer" {
-				fmt.Println("Arquivo detectado em outra rede. Conectando com o peer ", string(msg.Conteudo), "...")
+				peers := strings.Split(string(msg.Conteudo), "/")
+
+				if len(peers) > 1 {
+					fmt.Println("Arquivo detectado em multiplos peers de outra rede. Selecione um: ")
+
+					connClient, clientPeer := multiplePeers(peers)
+
+					if connClient != nil {
+						defer connClient.Close()
+
+						msgDownload := newMensagem("downloadFile", ipHost, clientPeer, []byte(arquivo), ipHost, 0)
+
+						fmt.Println("Enviando requisição de download...")
+						connClient.Write(msgDownload.toBytes())
+
+						arq, tamArq = receiveFile(connClient)
+					}
+
+				} else {
+					fmt.Println("Arquivo detectado em um único peer de outra rede. Conectando com o peer ", strings.Split(string(msg.Conteudo), "-")[1], "...")
+
+					connClient, clientPeer := uniquePeer(msg)
+
+					defer connClient.Close()
+
+					msgDownload := newMensagem("downloadFile", ipHost, clientPeer, []byte(arquivo), ipHost, 0)
+
+					fmt.Println("Enviando requisição de download...")
+					connClient.Write(msgDownload.toBytes())
+
+					arq, tamArq = receiveFile(connClient)
+				}
+
 			} else {
 				fmt.Println(msg.Tipo + ": " + string(msg.Conteudo))
 				fmt.Println()
@@ -885,6 +888,53 @@ func handleOpcoes(opcao int) {
 		fmt.Println("Opção inválida!")
 	}
 
+}
+
+func uniquePeer(msg *Mensagem) (net.Conn, string) {
+	peerIp := strings.Split(string(msg.Conteudo), "-")[1]
+	clientPeer := peerIp
+
+	connClient, err := net.Dial("tcp", clientPeer)
+	errorHandler(err, "Erro ao conectar com o cliente: ", false)
+
+	return connClient, clientPeer
+}
+
+func multiplePeers(peers []string) (net.Conn, string) {
+	for i, peer := range peers {
+		peerIp := strings.Split(peer, "-")
+		fmt.Printf("\t%d - %s\n", i+1, peerIp[1])
+	}
+	fmt.Printf("\t0 - Voltar\n")
+
+	var opcao int
+
+	var peerIp string
+
+	for {
+		fmt.Print("Opção: ")
+		fmt.Scan(&opcao)
+
+		if opcao >= 1 && opcao <= len(peers) {
+			// abre conexão direta com o peer
+			peerIp = strings.Split(peers[opcao-1], "-")[1]
+			fmt.Println("Conectando com o peer ", peerIp, "...")
+
+			break
+
+		} else if opcao == 0 {
+			return nil, ""
+		} else {
+			fmt.Printf("Opção inválida!\n\n")
+		}
+	}
+
+	clientPeer := peerIp
+
+	connClient, err := net.Dial("tcp", clientPeer)
+	errorHandler(err, "Erro ao conectar com o cliente: ", false)
+
+	return connClient, clientPeer
 }
 
 func receiveFile(conn net.Conn) ([]byte, int64) {

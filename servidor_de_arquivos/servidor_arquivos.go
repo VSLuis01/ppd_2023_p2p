@@ -30,6 +30,8 @@ type Arquivos struct {
 
 var tabelaArquivos []Arquivos
 
+var tabelaArquivosOutraRede []Arquivos
+
 var privateKey string
 
 var ipHost string
@@ -247,10 +249,11 @@ func handleTcpMessages(conn net.Conn) {
 		case "downloadFile":
 			// envia o ip de quem possui o arquivo
 			var peersFiles []string
+			var peersFilesOutraRede []string
 
 			for _, tabelaArquivo := range tabelaArquivos {
 				if tabelaArquivo.NomeArquivo == string(msg.Conteudo) {
-					peersFiles = append(peersFiles, tabelaArquivo.Cliente.IPHost)
+					peersFiles = append(peersFiles, tabelaArquivo.Cliente.IDHost+"-"+tabelaArquivo.Cliente.IPHost)
 				}
 			}
 
@@ -258,18 +261,74 @@ func handleTcpMessages(conn net.Conn) {
 
 			if len(peersFiles) == 0 {
 				// procura em outra rede
+				for _, tabelaArquivo := range tabelaArquivosOutraRede {
+					if tabelaArquivo.NomeArquivo == string(msg.Conteudo) {
+						peersFilesOutraRede = append(peersFilesOutraRede, tabelaArquivo.Cliente.IDHost+"-"+tabelaArquivo.Cliente.IPHost)
+					}
+				}
 
-				nMsg = newMensagem("NoSuchFile", ipHost, msg.IpOrigem, []byte("Arquivo não encontrado na rede anel local"), ipHost, 0)
+				if len(peersFilesOutraRede) == 0 {
+					nMsg = newMensagem("findFileAnotherRing", ipHost, connSuperNo.RemoteAddr().String(), msg.Conteudo, ipHost, 0)
+
+					conn.Write(nMsg.toBytes())
+
+					time.Sleep(500 * time.Millisecond)
+
+					buf := make([]byte, 1024)
+
+					msgLen, _ = conn.Read(buf)
+
+					buf = buf[:msgLen]
+
+					rcvMsg, err := splitMensagem(string(buf))
+					errorHandler(err, "", false)
+
+					if rcvMsg.Tipo == "UniquePeer" {
+						idPeerAndIp := strings.Split(string(rcvMsg.Conteudo), "-")
+
+						tabelaArquivosOutraRede = append(tabelaArquivosOutraRede, Arquivos{string(msg.Conteudo), HostAnel{idPeerAndIp[0], idPeerAndIp[1]}})
+
+						m := newMensagem("AnotherNetworkPeer", ipHost, rcvMsg.IpOrigem, rcvMsg.Conteudo, ipHost, rcvMsg.JumpsCount+1)
+
+						fmt.Println(m.toString())
+
+						conn.Write(m.toBytes())
+					} else if rcvMsg.Tipo == "MultiplePeers" {
+						idPeersAndIps := strings.Split(string(rcvMsg.Conteudo), "/")
+
+						for _, idPeerAndIp := range idPeersAndIps {
+							idPeerAndIpSplit := strings.Split(idPeerAndIp, "-")
+							tabelaArquivosOutraRede = append(tabelaArquivosOutraRede, Arquivos{string(msg.Conteudo), HostAnel{idPeerAndIpSplit[0], idPeerAndIpSplit[1]}})
+						}
+
+						m := newMensagem("AnotherNetworkPeer", ipHost, rcvMsg.IpOrigem, rcvMsg.Conteudo, ipHost, rcvMsg.JumpsCount+1)
+
+						conn.Write(m.toBytes())
+					} else {
+						nMsg = newMensagem("NoSuchFile", ipHost, msg.IpOrigem, []byte("Arquivo não encontrado em outra rede anel"), ipHost, 0)
+
+						conn.Write(nMsg.toBytes())
+					}
+				} else {
+					fmt.Println("Arquivo encontrado nos arquivos locais que pertence a outra rede: ")
+
+					nMsg = newMensagem("AnotherNetworkPeer", ipHost, msg.IpOrigem, []byte(strings.Join(peersFilesOutraRede, "/")), ipHost, 0)
+
+					conn.Write(nMsg.toBytes())
+				}
 
 			} else if len(peersFiles) == 1 {
 				nMsg = newMensagem("UniquePeer", ipHost, msg.IpOrigem, []byte(peersFiles[0]), ipHost, 0)
+
+				conn.Write(nMsg.toBytes())
+
 			} else {
 				bytesPeers := []byte(strings.Join(peersFiles, "/"))
 
 				nMsg = newMensagem("MultiplePeers", ipHost, msg.IpOrigem, bytesPeers, ipHost, 0)
-			}
 
-			conn.Write(nMsg.toBytes())
+				conn.Write(nMsg.toBytes())
+			}
 
 		case "listFiles":
 			bytesTabelaArquivos, _ := json.Marshal(tabelaArquivos)

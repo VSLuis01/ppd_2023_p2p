@@ -41,6 +41,8 @@ var ipHost string
 
 var privateKey string
 
+var connAnotherNetwork net.Conn = nil
+
 type Mensagem struct {
 	Tipo       string
 	IpOrigem   string
@@ -218,8 +220,6 @@ func tcpHandleMessages(conn net.Conn, ackChan chan<- bool, finishChan chan<- boo
 
 		msg, _ := splitMensagem(string(mensagem))
 
-		fmt.Printf("[%s] Enviou: %s - Tipo > %s\n", conn.RemoteAddr().String(), string(msg.Conteudo), msg.Tipo)
-
 		if strings.EqualFold(msg.Tipo, "ack") {
 			ackChan <- true
 
@@ -268,6 +268,35 @@ func repassaMsg(msg *Mensagem) {
 	}
 }
 
+func handleFindFile(connSuper net.Conn, super HostAnel, msg *Mensagem, newMsg chan *Mensagem, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	defer connSuper.Close()
+
+	fmt.Println("Repassando requisição do mestre de outra rede para o super nó: ", super.IPHost)
+
+	msg.IpAtual = ipHost
+	msg.JumpsCount++
+	msg.IpDestino = super.IPHost
+
+	connSuper.Write(msg.toBytes())
+
+	buf := make([]byte, 1024)
+
+	msgLen, _ := connSuper.Read(buf)
+	buf = buf[:msgLen]
+
+	msg, err := splitMensagem(string(buf))
+	errorHandler(err, "(handleFindFile): ", false)
+
+	if err == nil {
+		msg.JumpsCount++
+		msg.IpAtual = ipHost
+
+		newMsg <- msg
+	}
+}
+
 // Receber conexoes da rede em anel
 func receiveMessageAnelListening() {
 	tcpAddrIpHost, err := net.ResolveTCPAddr("tcp", ipHost)
@@ -281,7 +310,6 @@ func receiveMessageAnelListening() {
 		return
 	}
 
-	fmt.Println("Aguardando conexões do anel...")
 	for {
 		conn, err := tcpListener.Accept()
 		if err != nil {
@@ -352,6 +380,88 @@ func receiveMessageAnelListening() {
 					case "AtualizaProximo":
 						ipNextNode = string(msg.Conteudo)
 						conn.Write(newAck(conn.RemoteAddr().String()).toBytes())
+					case "findFileAnotherRing":
+						if connAnotherNetwork == nil {
+							// procura em outra rede
+							ips := openFileAndGetIps("../ips")
+							ips2 := openFileAndGetIps("../ips2")
+
+							var ipMestreOtherRing string
+
+							if ips[0] == ipHost {
+								ipMestreOtherRing = ips2[0]
+							} else {
+								ipMestreOtherRing = ips[0]
+							}
+
+							if ipMestreOtherRing != ipHost {
+								connAnotherNetwork, err = net.Dial("tcp", ipMestreOtherRing)
+								errorHandler(err, "Erro ao conectar com o outro anel: ", false)
+
+								if err == nil {
+									msg.Tipo = "downloadFile"
+									msg.IpAtual = ipHost
+									msg.JumpsCount++
+									msg.IpDestino = ipMestreOtherRing
+
+									connAnotherNetwork.Write(msg.toBytes())
+
+									fmt.Println("Repassando requisição do mestre para o outro anel: ", ipMestreOtherRing)
+
+									buf := make([]byte, 1024)
+
+									msgLen, _ = connAnotherNetwork.Read(buf)
+									buf = buf[:msgLen]
+
+									msg, err = splitMensagem(string(buf))
+
+									fmt.Println("Recebendo resposta do outro anel: ", msg.toString())
+
+									conn.Write(msg.toBytes())
+								}
+
+								connAnotherNetwork.Close()
+								connAnotherNetwork = nil
+							}
+
+						}
+					case "downloadFile":
+						fmt.Println("Recebendo requisição de download de outra rede")
+
+						var wg sync.WaitGroup
+						newMsg := make(chan *Mensagem, 2)
+
+						// Incrementa o WaitGroup para o número de goroutines que serão criadas
+						wg.Add(len(tabelaRoteamentoSuperNos))
+
+						// Cria goroutines para lidar com as requisições
+						for _, super := range tabelaRoteamentoSuperNos {
+							connSuper, err := net.Dial("tcp", super.IPHost)
+
+							if err == nil {
+								go handleFindFile(connSuper, super, msg, newMsg, &wg)
+							}
+
+							time.Sleep(300 * time.Millisecond)
+						}
+
+						// Goroutine para esperar todas as goroutines concluírem
+						go func() {
+							wg.Wait()
+							close(newMsg) // Fecha o canal quando todas as goroutines concluírem
+						}()
+
+						// Recebe todas as mensagens do canal
+						for msg := range newMsg {
+							if msg.Tipo != "NotFound" {
+								fmt.Println("Retornando requisição para a outra rede....")
+
+								msg.IpDestino = conn.RemoteAddr().String()
+								conn.Write(msg.toBytes())
+							} else {
+								fmt.Println("Falha ao enviar requisição para o super nó: ", msg.Tipo+": "+string(msg.Conteudo))
+							}
+						}
 					default:
 						// se não encontrou nenhuma mensagem válida, repassa para o próximo e anterior
 						repassaMsg(msg)
@@ -503,7 +613,7 @@ func main() {
 		conns = append(conns, conn)
 
 		// envia a chave de identificação unica do nó mestre
-		msg := newMensagem("chave", ipHost, conn.RemoteAddr().String(), []byte(privateKey), ipHost, 0)
+		msg := newMensagem("chave", ipHost, conn.RemoteAddr().String(), []byte(privateKey+"/"+ipHost), ipHost, 0)
 		_, err = conn.Write(msg.toBytes())
 		errorHandler(err, "Erro ao enviar a chave de identificação", false)
 
