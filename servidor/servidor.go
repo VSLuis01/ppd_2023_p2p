@@ -227,7 +227,7 @@ func receiveMessageAnelListening() {
 						// tunel
 					}
 				} else {
-					switch msg.Tipo {
+					switch msg.Tipo { //
 
 					case "InitListSuper":
 						fmt.Println("Mensagem recebida, do superno: ", msg.toString())
