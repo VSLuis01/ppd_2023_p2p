@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
@@ -77,7 +78,26 @@ func (m *Mensagem) copy() *Mensagem {
 func (m *Mensagem) toString() string {
 	return fmt.Sprintf("%s#%s#%s#%s#%s#%d", m.Tipo, m.IpOrigem, m.IpDestino, m.Conteudo, m.IpAtual, m.JumpsCount)
 }
+func exitRing() {
 
+	//informa um superno
+	fmt.Println(tabelasDeRoteamentoSupers)
+	destino := tabelasDeRoteamentoSupers[0].IPHost
+
+
+	m := newMensagem("ServidorSairAnel", ipHost, destino, []byte(privateKey), ipHost, 0)
+	m.sendNextNode()
+	//espera  por um tempo
+	time.Sleep(1 * time.Second)
+
+	//informa antecessor e sucessor
+	m = newMensagem("AtualizaProximo", ipHost, ipPrevNode, []byte(ipNextNode), ipHost, 0)
+	m.sendPrevNode()
+	m = newMensagem("AtualizaAnt", ipHost, ipNextNode, []byte(ipPrevNode), ipHost, 0)
+	m.sendNextNode()
+	time.Sleep(1 * time.Second)
+
+}
 func (m *Mensagem) toBytes() []byte {
 	return []byte(m.toString())
 }
@@ -254,6 +274,7 @@ func receiveMessageAnelListening() {
 		return
 	}
 
+	fmt.Println("Servidor TCP do anel iniciado com sucesso")
 	for {
 		conn, err := tcpListener.Accept()
 		errorHandler(err, "Erro ao aceitar conexão TCP: ", false)
@@ -288,11 +309,56 @@ func receiveMessageAnelListening() {
 						// tunel
 					}
 				} else {
-					switch msg.Tipo {
-					case "AtualizaProximo":
-						ipNextNode = string(msg.Conteudo)
+					switch msg.Tipo { //
+					//
+					case "InitListSuper":
+						fmt.Println("Mensagem recebida, do superno: ", msg.toString())
 
+						mutexTabelasDeSupers.Lock()
+
+						err := json.Unmarshal(msg.Conteudo, &tabelasDeRoteamentoSupers)
+						if err != nil {
+							fmt.Println("Erro ao converter roteamento:", err)
+						}
+
+						mutexTabelasDeSupers.Unlock()
+
+					case "InitListServ":
+						mutexTabelasDeServ.Lock()
+						err := json.Unmarshal(msg.Conteudo, &tabelasDeRoteamentoServidores)
+						if err != nil {
+							fmt.Println("Erro ao converter roteamento:", err)
+						}
+
+						mutexTabelasDeServ.Unlock()
+
+					case "AtualizaProximo":
+						closeNextNode()
+						ipNextNode = string(msg.Conteudo)
+						connectNextNode()
 						conn.Write(newAck(conn.RemoteAddr().String()).toBytes())
+					case "AtualizaAnt":
+						closePrevNode()
+						ipPrevNode = string(msg.Conteudo)
+						connectPrevNode()
+						conn.Write(newAck(conn.RemoteAddr().String()).toBytes())
+					case "AtualizarListaServerSaida":
+						var tabelaAnelAux []HostAnel
+
+						err := json.Unmarshal(msg.Conteudo, &tabelaAnelAux)
+						if err != nil {
+							fmt.Println("erro de decodificar saida servidor")
+						}
+						mutexTabelasDeServ.Lock()
+						aux := tabelasDeRoteamentoServidores
+						for i, p := range tabelasDeRoteamentoServidores {
+							if p.IDHost == string(msg.Conteudo) {
+								aux = append(aux[:i], aux[i+1:]...)
+								tabelasDeRoteamentoServidores = append(tabelasDeRoteamentoServidores[:i], tabelasDeRoteamentoServidores[i+1:]...)
+							}
+
+						}
+						mutexTabelasDeServ.Unlock()
 					case "AtualizarListaServer":
 
 						var tabelaAnelAux []HostAnel
@@ -475,6 +541,8 @@ func main() {
 	var err error
 	ipHost, err = getIpHost()
 	errorHandler(err, "Erro ao obter endereço IP da máquina: ", true)
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt)
 
 	if *ipConect == "" { //nesse caso o servidor é da configuração inicial
 		if *ipIndexFile == -1 {
@@ -487,6 +555,8 @@ func main() {
 		// recebe mensagens do anel
 		go receiveMessageAnelListening()
 
+		fmt.Println("Se conectando a um super nó...")
+
 		//por padrao o endereço do superno de configuração inicial é o segundo elemento da lista de ips
 		ipSuperNo, _, _ := net.SplitHostPort(listIp[1])
 
@@ -494,6 +564,8 @@ func main() {
 
 		conn, err := net.Dial("tcp", ipSuperNo)
 		errorHandler(err, "Erro ao conectar ao super nó:", true)
+
+		fmt.Println("Conexão TCP estabelecida com sucesso")
 
 		privateKey = newHashSha1()
 
@@ -507,14 +579,22 @@ func main() {
 		// recebe mensagens do anel
 
 	}
-
+	go func() {
+		for sig := range c {
+			fmt.Println(sig.String())
+			fmt.Println("saindo do anel")
+			exitRing()
+			fmt.Println("saiu do anel")
+			os.Exit(0)
+		}
+	}()
 	// Wait forever
 	select {}
 }
 
 func joinRing(ipSuper string) {
 	//conecta solicita conexão super nó
-	buffer := make([]byte, 1024)
+	buffer := make([]byte, 4000)
 
 	conn, err := net.Dial("tcp", ipSuper)
 
@@ -574,6 +654,8 @@ func joinRing(ipSuper string) {
 	msg := newAck(conn.RemoteAddr().String())
 
 	conn.Write(msg.toBytes())
+	//inicializa tabelas
+
 }
 
 // Conexões diretas com o nó servidor
@@ -584,6 +666,7 @@ func tcpConfigSuperNo(conn net.Conn) {
 
 	_, err := conn.Write(msg.toBytes())
 	errorHandler(err, "Erro ao enviar chave para o super nó: ", false)
+	fmt.Println("Chave enviada para o super nó")
 
 	buffer := make([]byte, 4000)
 	msgLen, err := conn.Read(buffer)
@@ -600,7 +683,10 @@ func tcpConfigSuperNo(conn net.Conn) {
 
 	msg, _ = splitMensagem(string(mensagem))
 
+	fmt.Printf("[%s] Enviou: %s - Tipo > %s\n", conn.RemoteAddr().String(), string(msg.Conteudo), msg.Tipo)
+
 	if strings.EqualFold(msg.Tipo, "ack") {
+		fmt.Println("Chave recebida pelo super nó")
 
 		// Solicita a tabela dos super nós
 		msg = newMensagem("roteamento-supers", ipHost, conn.RemoteAddr().String(), []byte(""), ipHost, 0)

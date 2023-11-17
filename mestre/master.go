@@ -220,6 +220,8 @@ func tcpHandleMessages(conn net.Conn, ackChan chan<- bool, finishChan chan<- boo
 
 		msg, _ := splitMensagem(string(mensagem))
 
+		fmt.Printf("[%s] Enviou: %s - Tipo > %s\n", conn.RemoteAddr().String(), string(msg.Conteudo), msg.Tipo)
+
 		if strings.EqualFold(msg.Tipo, "ack") {
 			ackChan <- true
 
@@ -310,6 +312,7 @@ func receiveMessageAnelListening() {
 		return
 	}
 
+	fmt.Println("Aguardando conexões do anel...")
 	for {
 		conn, err := tcpListener.Accept()
 		if err != nil {
@@ -349,10 +352,27 @@ func receiveMessageAnelListening() {
 					} else if msg.IpAtual == ipPrevNode {
 						msg.sendNextNode()
 					} else {
-
+						// tunel
 					}
 				} else {
 					switch msg.Tipo {
+					case "AtualizarListaServerSaida":
+						var tabelaAnelAux []HostAnel
+
+						err := json.Unmarshal(msg.Conteudo, &tabelaAnelAux)
+						if err != nil {
+							fmt.Println("erro de decodificar saida servidor")
+						}
+						mutexTabelasDeServ.Lock()
+						aux := tabelasDeRoteamentoServidores
+						for i, p := range tabelasDeRoteamentoServidores {
+							if p.IDHost == string(msg.Conteudo) {
+								aux = append(aux[:i], aux[i+1:]...)
+								tabelasDeRoteamentoServidores = append(tabelasDeRoteamentoServidores[:i], tabelasDeRoteamentoServidores[i+1:]...)
+							}
+
+						}
+						mutexTabelasDeServ.Unlock()
 					case "AtualizarListaServer":
 
 						var tabelaAnelAux []HostAnel
@@ -378,7 +398,14 @@ func receiveMessageAnelListening() {
 						tabelasDeRoteamentoServidores = append(tabelasDeRoteamentoServidores, tabelaAnelAux2...)
 						mutexTabelasDeServ.Unlock()
 					case "AtualizaProximo":
+						closeNextNode()
 						ipNextNode = string(msg.Conteudo)
+						connectNextNode()
+						conn.Write(newAck(conn.RemoteAddr().String()).toBytes())
+					case "AtualizaAnt":
+						closePrevNode()
+						ipPrevNode = string(msg.Conteudo)
+						connectPrevNode()
 						conn.Write(newAck(conn.RemoteAddr().String()).toBytes())
 					case "findFileAnotherRing":
 						if connAnotherNetwork == nil {

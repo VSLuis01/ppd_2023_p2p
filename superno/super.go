@@ -46,6 +46,7 @@ var privateKey string
 var ipMestre string
 var privateKeyMestre string
 
+// struct da mensagem
 type Mensagem struct {
 	Tipo       string
 	IpOrigem   string
@@ -228,6 +229,8 @@ func tcpHandleMessages(conn net.Conn, ackChan chan<- bool) {
 
 		msg, _ := splitMensagem(string(mensagem))
 
+		fmt.Printf("[%s] Enviou: %s - Tipo > %s\n", conn.RemoteAddr().String(), string(msg.Conteudo), msg.Tipo)
+
 		if strings.EqualFold(msg.Tipo, "roteamento-supers") {
 			// slice dos ips dos supernos
 			bytesRoteamento, err := json.Marshal(tabelaRoteamentoSuperNos)
@@ -392,6 +395,7 @@ func main() {
 	defer mestreConn.Close()
 
 	errorHandler(err, "Erro ao conectar ao mestre:", true)
+	fmt.Println("Conexão TCP estabelecida com sucesso")
 
 	go configNoMestre(mestreConn, finishMestreChan)
 
@@ -431,6 +435,9 @@ func configNoMestre(mestreConn net.Conn, finish chan<- bool) {
 	privateKeyMestre = ipAndPrivateKey[0]
 	ipMestre = ipAndPrivateKey[1]
 	//go tcpHandleIncomingMessages(mestreConn)
+	fmt.Println("Chave recebida do mestre: ", privateKeyMestre)
+
+	fmt.Println("Enviando ACK para o nó mestre...")
 
 	// envia um ACK com o IpHost real para a tabela de roteamento
 	msg = newMensagem("ack", ipHost, mestreConn.RemoteAddr().String(), []byte(privateKey+"/"+ipHost), ipHost, 0)
@@ -453,6 +460,7 @@ func configNoMestre(mestreConn net.Conn, finish chan<- bool) {
 	// registros dos super nós finalizados
 	if msg.Tipo == "ok" {
 		// solicitando tabela de roteamento
+		fmt.Println("Solicitando tabela de roteamento ao mestre...")
 
 		msg = newMensagem("roteamento-supers", ipHost, mestreConn.RemoteAddr().String(), []byte(""), ipHost, 0)
 
@@ -577,6 +585,7 @@ func receiveMessageAnelListening() {
 		return
 	}
 
+	fmt.Println("Servidor TCP do anel iniciado...")
 	for {
 		conn, err := tcpListener.Accept()
 		if err != nil {
@@ -654,11 +663,28 @@ func receiveMessageAnelListening() {
 						buffer = buffer[:n]
 						msg, _ = splitMensagem(string(buffer))
 						if msg.Tipo == "ack" {
+							ipPrevNode = myp.IPHost
+							connectPrevNode()
 							fmt.Println("ACK recebido")
+							byteTabelaSupers, _ := json.Marshal(tabelaRoteamentoSuperNos)
 							time.Sleep(1 * time.Second)
+							mensa := newMensagem("InitListSuper", ipHost, myp.IPHost, byteTabelaSupers, ipHost, 0)
+							fmt.Println("enviando: ", mensa.toString())
+							mensa.sendPrevNode()
+							fmt.Println("enviou ", n)
+							if err != nil {
+								fmt.Println("erro ao enviar:", err)
+							}
+							time.Sleep(2 * time.Second)
+							byteTabelaServ, _ := json.Marshal(tabelaRoteamentoSuperNos)
 
-							ipPrevNode = conn.RemoteAddr().String()
-							byteTabelaServidores, _ := json.Marshal(tabelasDeRoteamentoServidores)
+							mensa = newMensagem("InitListServ", ipHost, myp.IPHost, byteTabelaServ, ipHost, 0)
+							mensa.sendPrevNode()
+							time.Sleep(2 * time.Second)
+							//
+							var ServEnvio []HostAnel
+							ServEnvio = append(ServEnvio, myp)
+							byteTabelaServidores, _ := json.Marshal(ServEnvio)
 							fmt.Println(tabelasDeRoteamentoServidores)
 							for _, p := range tabelasDeRoteamentoServidores {
 								fmt.Println("Enviando tabela para: ", p.IPHost)
@@ -680,6 +706,23 @@ func receiveMessageAnelListening() {
 						}
 
 						conn.Write(newAck(conn.RemoteAddr().String()).toBytes())
+					case "AtualizarListaServerSaida":
+						var tabelaAnelAux []HostAnel
+
+						err := json.Unmarshal(msg.Conteudo, &tabelaAnelAux)
+						if err != nil {
+							fmt.Println("erro de decodificar saida servidor")
+						}
+						mutexTabelasDeServ.Lock()
+						aux := tabelasDeRoteamentoServidores
+						for i, p := range tabelasDeRoteamentoServidores {
+							if p.IDHost == string(msg.Conteudo) {
+								aux = append(aux[:i], aux[i+1:]...)
+								tabelasDeRoteamentoServidores = append(tabelasDeRoteamentoServidores[:i], tabelasDeRoteamentoServidores[i+1:]...)
+							}
+
+						}
+						mutexTabelasDeServ.Unlock()
 					case "AtualizarListaServer":
 
 						var tabelaAnelAux []HostAnel
@@ -704,8 +747,47 @@ func receiveMessageAnelListening() {
 						}
 						tabelasDeRoteamentoServidores = append(tabelasDeRoteamentoServidores, tabelaAnelAux2...)
 						mutexTabelasDeServ.Unlock()
+					case "ServidorSairAnel":
+						fmt.Println("Servidor saiu do anel: ", string(msg.Conteudo))
+						mutexTabelasDeServ.Lock()
+						aux := tabelasDeRoteamentoServidores
+						for i, p := range tabelasDeRoteamentoServidores {
+							if p.IDHost == string(msg.Conteudo) {
+								aux = append(aux[:i], aux[i+1:]...)
+								tabelasDeRoteamentoServidores = append(tabelasDeRoteamentoServidores[:i], tabelasDeRoteamentoServidores[i+1:]...)
+							}
+
+						}
+						mutexTabelasDeServ.Unlock()
+						byteTabelaServidores, _ := json.Marshal(tabelasDeRoteamentoServidores)
+						fmt.Println(tabelasDeRoteamentoServidores)
+						for _, p := range tabelasDeRoteamentoServidores {
+							fmt.Println("Enviando tabela para: ", p.IPHost)
+							mensagemEnvio := newMensagem("AtualizarListaServerSaida", ipHost, p.IPHost, byteTabelaServidores, ipHost, 0)
+							fmt.Println(mensagemEnvio.toString())
+							mensagemEnvio.sendNextNode()
+							time.Sleep(2 * time.Second)
+						}
+
+						fmt.Println(tabelaRoteamentoSuperNos)
+						for _, p := range tabelaRoteamentoSuperNos {
+							fmt.Println("Enviando tabela para: ", p.IPHost)
+							mensagemEnvio := newMensagem("AtualizarListaServerSaida", ipHost, p.IPHost, byteTabelaServidores, ipHost, 0)
+							fmt.Println(mensagemEnvio.toString())
+							mensagemEnvio.sendNextNode()
+							time.Sleep(2 * time.Second)
+						}
+						fmt.Println("Tabela de servidores atualizada: ", aux)
+
 					case "AtualizaProximo":
+						closeNextNode()
 						ipNextNode = string(msg.Conteudo)
+						connectNextNode()
+						conn.Write(newAck(conn.RemoteAddr().String()).toBytes())
+					case "AtualizaAnt":
+						closePrevNode()
+						ipPrevNode = string(msg.Conteudo)
+						connectPrevNode()
 						conn.Write(newAck(conn.RemoteAddr().String()).toBytes())
 					case "FindSuper":
 						// abre uma conexão direta com o servidor de arquivo
