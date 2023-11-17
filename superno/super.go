@@ -602,7 +602,7 @@ func receiveMessageAnelListening() {
 							mensa = newMensagem("InitListServ", ipHost, myp.IPHost, byteTabelaServ, ipHost, 0)
 							mensa.sendPrevNode()
 							time.Sleep(2 * time.Second)
-
+							//
 							var ServEnvio []HostAnel
 							ServEnvio = append(ServEnvio, myp)
 							byteTabelaServidores, _ := json.Marshal(ServEnvio)

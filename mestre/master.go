@@ -307,7 +307,7 @@ func receiveMessageAnelListening() {
 								}
 
 							}
-							if !existe {
+							if !existe { //
 								tabelaAnelAux2 = append(tabelaAnelAux2, p)
 							}
 						}
